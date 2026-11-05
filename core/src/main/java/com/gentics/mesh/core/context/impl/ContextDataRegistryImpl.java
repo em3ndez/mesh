@@ -40,7 +40,7 @@ public class ContextDataRegistryImpl implements ContextDataRegistry {
 
 	@Override
 	public HibBranch getBranch(InternalActionContext ac, HibProject project) {
-		if (ac instanceof NodeMigrationActionContext && project == null) {
+		if (ac instanceof NodeMigrationActionContext) {
 			return ((NodeMigrationActionContext) ac).getBranch();
 		}
 		if (project == null) {
@@ -50,7 +50,7 @@ public class ContextDataRegistryImpl implements ContextDataRegistry {
 			// TODO i18n
 			throw error(INTERNAL_SERVER_ERROR, "Cannot get branch without a project");
 		}
-		String branchNameOrUuid = ac.getVersioningParameters().getBranch();
+		String branchNameOrUuid = ac.getBranchParameters().getBranch();
 		return Tx.get().branchDao().findBranch(project, branchNameOrUuid);
 	}
 

@@ -1,6 +1,12 @@
 package com.gentics.mesh.rest.client;
 
 import java.io.InputStream;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
+import org.apache.commons.lang.StringUtils;
 
 import com.gentics.mesh.core.rest.common.GenericMessageResponse;
 import com.gentics.mesh.core.rest.common.RestModel;
@@ -72,24 +78,21 @@ public abstract class AbstractMeshRestHttpClient implements MeshRestClient {
 	}
 
 	/**
-	 * Prepare the request using the provides information and return a mesh request which is ready to be invoked.
-	 *
-	 * @param method
-	 *            Http method
-	 * @param path
-	 *            Request path
-	 * @param classOfT
-	 *            POJO class for the response
-	 * @param bodyData
-	 *            Buffer which contains the body data which should be send to the server
-	 * @param fileSize
-	 *            Total size of the data in bytes
-	 * @param contentType
-	 *            Content type of the posted data
-	 * @return
+	 * Prepare a request for uploading a file as multipart/form-data
+	 * @param <T> type of the response
+	 * @param method Http method
+	 * @param path Request path
+	 * @param classOfT POJO class for the response
+	 * @param fileName file name
+	 * @param contentType content type
+	 * @param fileData file data as input stream
+	 * @param fileSize file size
+	 * @param fields map containing additional fields which should be contained in the form
+	 * @return request
 	 */
-	abstract public <T> MeshRequest<T> prepareRequest(HttpMethod method, String path, Class<? extends T> classOfT, InputStream bodyData,
-		long fileSize, String contentType);
+	abstract public <T> MeshRequest<T> prepareFileuploadRequest(HttpMethod method, String path,
+			Class<? extends T> classOfT, String fileName, String contentType, InputStream fileData, long fileSize,
+			Map<String, String> fields);
 
 	/**
 	 * Prepare the request using the provides information and return a mesh request which is ready to be invoked.
@@ -104,7 +107,26 @@ public abstract class AbstractMeshRestHttpClient implements MeshRestClient {
 	 *            Rest model which should be used to construct the JSON post data
 	 * @return
 	 */
-	abstract public <T> MeshRequest<T> prepareRequest(HttpMethod method, String path, Class<? extends T> classOfT, RestModel restModel);
+	public <T> MeshRequest<T> prepareRequest(HttpMethod method, String path, Class<? extends T> classOfT, RestModel restModel) {
+		return prepareRequest(method, path, classOfT, restModel, false);
+	}
+
+	/**
+	 * Prepare the request using the provides information and return a mesh request which is ready to be invoked.
+	 *
+	 * @param method
+	 *            Http method
+	 * @param path
+	 *            Request path
+	 * @param classOfT
+	 *            POJO class for the response
+	 * @param restModel
+	 *            Rest model which should be used to construct the JSON post data
+	 * @param nullBodyAllowed
+	 *            Whether this method allows no body, despite it is declared
+	 * @return
+	 */
+	abstract public <T> MeshRequest<T> prepareRequest(HttpMethod method, String path, Class<? extends T> classOfT, RestModel restModel, boolean nullBodyAllowed);
 
 	/**
 	 * Prepare the request using the provides information and return a mesh request which is ready to be invoked.
@@ -115,7 +137,9 @@ public abstract class AbstractMeshRestHttpClient implements MeshRestClient {
 	 * @param data
 	 * @return
 	 */
-	abstract public <T> MeshRequest<T> handleTextRequest(HttpMethod method, String path, Class<? extends T> classOfT, String data);
+	public <T> MeshRequest<T> handleTextRequest(HttpMethod method, String path, Class<? extends T> classOfT, String data) {
+		return handleTextRequest(method, path, classOfT, data, false);
+	}
 
 	/**
 	 * Prepare the request using the provides information and return a mesh request which is ready to be invoked.
@@ -126,7 +150,33 @@ public abstract class AbstractMeshRestHttpClient implements MeshRestClient {
 	 * @param jsonBodyData
 	 * @return
 	 */
-	abstract public <T> MeshRequest<T> handleRequest(HttpMethod method, String path, Class<? extends T> classOfT, String jsonBodyData);
+	public <T> MeshRequest<T> handleRequest(HttpMethod method, String path, Class<? extends T> classOfT, String jsonBodyData) {
+		return handleRequest(method, path, classOfT, jsonBodyData, false);
+	}
+
+	/**
+	 * Prepare the request using the provides information and return a mesh request which is ready to be invoked.
+	 *
+	 * @param method
+	 * @param path
+	 * @param classOfT
+	 * @param data
+	 * @param nullBodyAllowed
+	 * @return
+	 */
+	abstract public <T> MeshRequest<T> handleTextRequest(HttpMethod method, String path, Class<? extends T> classOfT, String data, boolean nullBodyAllowed);
+
+	/**
+	 * Prepare the request using the provides information and return a mesh request which is ready to be invoked.
+	 *
+	 * @param method
+	 * @param path
+	 * @param classOfT
+	 * @param jsonBodyData
+	 * @param nullBodyAllowed
+	 * @return
+	 */
+	abstract public <T> MeshRequest<T> handleRequest(HttpMethod method, String path, Class<? extends T> classOfT, String jsonBodyData, boolean nullBodyAllowed);
 
 	/**
 	 * Prepare the request using the provides information and return a mesh request which is ready to be invoked.
@@ -142,22 +192,50 @@ public abstract class AbstractMeshRestHttpClient implements MeshRestClient {
 	abstract public <T> MeshRequest<T> prepareRequest(HttpMethod method, String path, Class<? extends T> classOfT);
 
 	/**
-	 * Return the query aggregated parameter string for the given providers.
+	 * Should the JSON body be minified?
 	 * 
-	 * @param parameters
 	 * @return
 	 */
-	public static String getQuery(ParameterProvider... parameters) {
-		StringBuilder builder = new StringBuilder();
-		for (int i = 0; i < parameters.length; i++) {
-			ParameterProvider provider = parameters[i];
-			builder.append(provider.getQueryParameters());
-			if (i != parameters.length - 1) {
-				builder.append("&");
+	abstract protected boolean isMinifyJson();
+
+	/**
+	 * Return the query aggregated parameter string for the given providers.
+	 * @param config configuration object (may be null)
+	 * @param parameters
+	 * 
+	 * @return
+	 */
+	public static String getQuery(MeshRestClientConfig config, ParameterProvider... parameters) {
+		return getQuery(config, Stream.of(parameters));
+	}
+
+	/**
+	 * Return the query aggregated parameter string for the given providers stream.
+	 * @param config configuration object (may be null)
+	 * @param parameters
+	 * 
+	 * @return
+	 */
+	public static String getQuery(MeshRestClientConfig config, Stream<ParameterProvider> parameters) {
+		Map<String, String> params = new LinkedHashMap<>();
+		if (config != null) {
+			// get the default parameters from the configuration (if any)
+			ParameterProvider[] defaultParameters = config.getDefaultParameters();
+			// put all non-blank parameters to the map
+			Stream.of(defaultParameters).flatMap(provider -> provider.getParameters().entrySet().stream())
+					.filter(entry -> StringUtils.isNotBlank(entry.getKey()) && StringUtils.isNotBlank(entry.getValue()))
+					.forEach(entry -> params.put(entry.getKey(), entry.getValue()));
 			}
-		}
-		if (builder.length() > 0) {
-			return "?" + builder.toString();
+
+		// put all non-blank parameters from the given providers to the map
+		parameters.flatMap(provider -> provider.getParameters().entrySet().stream())
+				.filter(entry -> StringUtils.isNotBlank(entry.getKey()) && StringUtils.isNotBlank(entry.getValue()))
+				.forEach(entry -> params.put(entry.getKey(), entry.getValue()));
+
+		// combine all parameters to a query string
+		String query = params.entrySet().stream().map(entry -> String.format("%s=%s", entry.getKey(), entry.getValue())).collect(Collectors.joining("&"));
+		if (query.length() > 0) {
+			return "?" + query;
 		} else {
 			return "";
 		}

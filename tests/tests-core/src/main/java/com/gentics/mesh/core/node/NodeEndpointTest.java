@@ -42,9 +42,13 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
+import org.apache.commons.lang3.RandomStringUtils;
 import org.junit.Ignore;
 import org.junit.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.gentics.mesh.FieldUtil;
 import com.gentics.mesh.core.data.HibLanguage;
@@ -56,21 +60,32 @@ import com.gentics.mesh.core.data.dao.NodeDao;
 import com.gentics.mesh.core.data.dao.RoleDao;
 import com.gentics.mesh.core.data.node.HibNode;
 import com.gentics.mesh.core.data.project.HibProject;
+import com.gentics.mesh.core.data.schema.HibSchema;
 import com.gentics.mesh.core.data.schema.HibSchemaVersion;
 import com.gentics.mesh.core.data.user.HibUser;
 import com.gentics.mesh.core.db.Tx;
+import com.gentics.mesh.core.db.TxAction;
+import com.gentics.mesh.core.rest.SortOrder;
 import com.gentics.mesh.core.rest.branch.BranchCreateRequest;
 import com.gentics.mesh.core.rest.common.ContainerType;
+import com.gentics.mesh.core.rest.common.ObjectPermissionGrantRequest;
+import com.gentics.mesh.core.rest.common.ObjectPermissionResponse;
 import com.gentics.mesh.core.rest.common.Permission;
 import com.gentics.mesh.core.rest.error.GenericRestException;
 import com.gentics.mesh.core.rest.event.node.NodeMeshEventModel;
+import com.gentics.mesh.core.rest.node.FieldMap;
+import com.gentics.mesh.core.rest.node.FieldMapImpl;
 import com.gentics.mesh.core.rest.node.NodeCreateRequest;
 import com.gentics.mesh.core.rest.node.NodeListResponse;
 import com.gentics.mesh.core.rest.node.NodeResponse;
 import com.gentics.mesh.core.rest.node.NodeUpdateRequest;
 import com.gentics.mesh.core.rest.node.NodeUpsertRequest;
 import com.gentics.mesh.core.rest.node.field.StringField;
+import com.gentics.mesh.core.rest.node.field.impl.StringFieldImpl;
+import com.gentics.mesh.core.rest.project.ProjectCreateRequest;
 import com.gentics.mesh.core.rest.project.ProjectReference;
+import com.gentics.mesh.core.rest.project.ProjectResponse;
+import com.gentics.mesh.core.rest.role.RoleReference;
 import com.gentics.mesh.core.rest.schema.SchemaReference;
 import com.gentics.mesh.core.rest.schema.impl.SchemaCreateRequest;
 import com.gentics.mesh.core.rest.schema.impl.SchemaReferenceImpl;
@@ -86,7 +101,9 @@ import com.gentics.mesh.parameter.impl.NodeParametersImpl;
 import com.gentics.mesh.parameter.impl.PagingParametersImpl;
 import com.gentics.mesh.parameter.impl.PublishParametersImpl;
 import com.gentics.mesh.parameter.impl.RolePermissionParametersImpl;
+import com.gentics.mesh.parameter.impl.SortingParametersImpl;
 import com.gentics.mesh.parameter.impl.VersioningParametersImpl;
+import com.gentics.mesh.rest.client.MeshRestClientMessageException;
 import com.gentics.mesh.rest.client.MeshWebrootResponse;
 import com.gentics.mesh.test.MeshTestSetting;
 import com.gentics.mesh.test.context.AbstractMeshTest;
@@ -96,11 +113,15 @@ import com.gentics.mesh.util.UUIDUtil;
 import com.gentics.mesh.util.VersionNumber;
 
 import io.reactivex.Observable;
-import io.vertx.core.logging.Logger;
-import io.vertx.core.logging.LoggerFactory;
 
-@MeshTestSetting(elasticsearch = TRACKING, testSize = FULL, startServer = true)
+@MeshTestSetting(elasticsearch = TRACKING, testSize = FULL, startServer = true, synchronizeWrites = true)
 public class NodeEndpointTest extends AbstractMeshTest implements BasicRestTestcases {
+	/**
+	 * Determine the connector defined string length limit
+	 */
+	protected final static TxAction<Integer> STRING_LENGTH_LIMIT = tx -> {
+		return tx.contentDao().getStringLengthLimit();
+	};
 
 	@Test
 	public void testCreateNodeWithNoLanguageCode() {
@@ -140,7 +161,7 @@ public class NodeEndpointTest extends AbstractMeshTest implements BasicRestTestc
 		request.setParentNodeUuid(folderUuid);
 
 		assertThat(trackingSearchProvider()).recordedStoreEvents(0);
-		call(() -> client().createNode(PROJECT_NAME, request), BAD_REQUEST, "language_not_found", "BOGUS");
+		call(() -> client().createNode(PROJECT_NAME, request), BAD_REQUEST, "error_language_not_found", "BOGUS");
 		assertThat(trackingSearchProvider()).recordedStoreEvents(0);
 	}
 
@@ -211,6 +232,58 @@ public class NodeEndpointTest extends AbstractMeshTest implements BasicRestTestc
 				MeshTestContext.LOG.info("Duration:" + i + " " + (duration / i));
 			}
 		}
+	}
+
+	@Test
+	@Override
+	public void testReadPermittedSorted() throws Exception {
+		HibNode parentNode = folder("news");
+		String uuid = tx(() -> parentNode.getUuid());
+		HibSchema schema = schemaContainer("content");
+		String schemaUuid = tx(() -> schema.getUuid());
+		for (int i = 1; i < 100; i++) {
+			trackingSearchProvider().reset();
+			NodeCreateRequest request = new NodeCreateRequest();
+			request.setSchema(new SchemaReferenceImpl().setName("content").setUuid(schemaUuid));
+			request.setLanguage("en");
+			request.getFields().put("title", createStringField("some title " + i));
+			request.getFields().put("teaser", createStringField("some teaser " + i));
+			request.getFields().put("slug", createStringField("new-page_" + i + ".html"));
+			request.getFields().put("content", createStringField("Blessed mealtime again!"));
+			request.setParentNodeUuid(uuid);
+
+			NodeResponse response = call(() -> client().createNode(PROJECT_NAME, request));
+			if ((i % 2) == 0) {
+				tx(tx -> {
+					tx.roleDao().revokePermissions(role(), tx.nodeDao().findByUuidGlobal(response.getUuid()), READ_PERM);
+				});
+			}
+		}
+
+		NodeListResponse list = call(() -> client().findNodes(PROJECT_NAME, new SortingParametersImpl("fields.content.title", SortOrder.DESCENDING),
+				new VersioningParametersImpl().draft()));
+		assertEquals("Total data size should be 66", 66, list.getData().size());
+		assertThat(list.getData()).isSortedAccordingTo((a, b) -> {
+			if (a == b) {
+				return 0;
+			}
+			StringFieldImpl fb = b.getFields().getStringField("title");
+			StringFieldImpl fa = a.getFields().getStringField("title");
+			if (fa == fb) {
+				return 0;
+			}
+			return getTestContext().getSortComparator().reversed().compare(
+						fa != null ? fa.getString() : null,
+						fb != null ? fb.getString() : null);
+		});
+	}
+
+	@Test
+	@Override
+	public void testReadPermittedSortedWrongField() throws Exception {
+		MeshRestClientMessageException error = call(() -> client().findNodes(PROJECT_NAME, new SortingParametersImpl("existiertleidernicht", SortOrder.DESCENDING),
+				new VersioningParametersImpl().draft()), BAD_REQUEST);
+		assertThat(error.getResponseMessage().getMessage()).as("Error message").startsWith("The following column names are not allowed for sorting: [existiertleidernicht].");
 	}
 
 	@Test
@@ -1388,7 +1461,7 @@ public class NodeEndpointTest extends AbstractMeshTest implements BasicRestTestc
 		SchemaResponse schema = call(() -> client().findSchemaByUuid(schemaUuid));
 
 		waitForJobs(() -> {
-			call(() -> client().updateSchema(schemaUuid, schema.toUpdateRequest().setSegmentField(null)));
+			call(() -> client().updateSchema(schemaUuid, schema.toUpdateRequest().setSegmentField("")));
 		}, COMPLETED, 1);		
 
 		NodeResponse response = call(() -> client().findNodeByUuid(PROJECT_NAME, nodeUuid, new NodeParametersImpl().setResolveLinks(
@@ -1559,6 +1632,7 @@ public class NodeEndpointTest extends AbstractMeshTest implements BasicRestTestc
 			HibProject project = tx.projectDao().findByUuid(project().getUuid());
 			HibNode parentNode = nodeDao.findByUuid(project, folder("products").getUuid());
 			HibLanguage languageNl = tx.languageDao().findByLanguageTag("nl");
+			project.addLanguage(languageNl);
 			HibSchemaVersion version = tx.schemaDao().findByUuid(schemaContainer("content").getUuid()).getLatestVersion();
 			HibUser user = tx.userDao().findByUuid(user().getUuid());
 			node = nodeDao.create(parentNode, user, version, project);
@@ -1593,6 +1667,7 @@ public class NodeEndpointTest extends AbstractMeshTest implements BasicRestTestc
 	}
 
 	@Test
+	@Ignore("We allow every input in the node read request")
 	public void testReadNodeWithBogusLanguageCode() throws Exception {
 		try (Tx tx = tx()) {
 
@@ -1627,11 +1702,6 @@ public class NodeEndpointTest extends AbstractMeshTest implements BasicRestTestc
 		call(() -> client().findNodeByUuid(PROJECT_NAME, uuid, new VersioningParametersImpl().draft()), FORBIDDEN, "error_missing_perm", uuid,
 			READ_PERM.getRestPerm().getName());
 
-	}
-
-	@Test
-	public void testReadNodeByBogusUUID() throws Exception {
-		call(() -> client().findNodeByUuid(PROJECT_NAME, "bogusUUID"), NOT_FOUND, "object_not_found_for_uuid", "bogusUUID");
 	}
 
 	@Test
@@ -1692,7 +1762,7 @@ public class NodeEndpointTest extends AbstractMeshTest implements BasicRestTestc
 		request.getFields().put("slug", FieldUtil.createStringField(newSlug));
 
 		// 3. Invoke update
-		searchProvider().clear().blockingAwait();
+		waitAndClearSearchIdleEvents();
 
 		expect(NODE_UPDATED).match(1, NodeMeshEventModel.class, event -> {
 			assertThat(event)
@@ -1718,7 +1788,7 @@ public class NodeEndpointTest extends AbstractMeshTest implements BasicRestTestc
 
 		waitForSearchIdleEvent();
 		assertThat(trackingSearchProvider()).hasStore(ContentDao.composeIndexName(projectUuid, branchUuid, schemaContainerVersionUuid,
-			ContainerType.DRAFT, null), ContentDao.composeDocumentId(uuid, "en"));
+			ContainerType.DRAFT, null, null), ContentDao.composeDocumentId(uuid, "en"));
 		assertThat(trackingSearchProvider()).hasEvents(1, 0, 0, 0, 0);
 
 		// 4. Assert that new version 1.1 was created. (1.0 was the published 0.1 draft)
@@ -1747,7 +1817,7 @@ public class NodeEndpointTest extends AbstractMeshTest implements BasicRestTestc
 
 			// Verify that exactly the selected language was updated
 			String indexName = ContentDao.composeIndexName(project().getUuid(), project().getLatestBranch().getUuid(), origContainer
-				.getSchemaContainerVersion().getUuid(), ContainerType.DRAFT, null);
+				.getSchemaContainerVersion().getUuid(), ContainerType.DRAFT, null, null);
 			String documentId = ContentDao.composeDocumentId(uuid, "en");
 			assertThat(trackingSearchProvider()).hasStore(indexName, documentId);
 			assertThat(trackingSearchProvider()).recordedStoreEvents(1);
@@ -1796,7 +1866,7 @@ public class NodeEndpointTest extends AbstractMeshTest implements BasicRestTestc
 		waitForSearchIdleEvent();
 		// Only the new language container is stored in the index. The existing one does not need to be updated since it does not reference other languages
 		assertThat(trackingSearchProvider()).hasStore(ContentDao.composeIndexName(projectUuid, branchUuid, schemaContainerVersionUuid,
-			ContainerType.DRAFT, null), ContentDao.composeDocumentId(uuid, "de"));
+			ContainerType.DRAFT, null, null), ContentDao.composeDocumentId(uuid, "de"));
 		assertThat(trackingSearchProvider()).hasEvents(1, 0, 0, 0, 0);
 	}
 
@@ -1815,21 +1885,6 @@ public class NodeEndpointTest extends AbstractMeshTest implements BasicRestTestc
 			NodeUpdateRequest request = new NodeUpdateRequest();
 			request.setLanguage("en");
 			call(() -> client().updateNode(PROJECT_NAME, uuid, request), FORBIDDEN, "error_missing_perm", uuid, UPDATE_PERM.getRestPerm().getName());
-		}
-	}
-
-	@Test
-	@Override
-	public void testUpdateWithBogusUuid() throws GenericRestException, Exception {
-
-		try (Tx tx = tx()) {
-			NodeUpdateRequest request = new NodeUpdateRequest();
-			request.setLanguage("en");
-
-			NodeParametersImpl parameters = new NodeParametersImpl();
-			parameters.setLanguages("en", "de");
-
-			call(() -> client().updateNode(PROJECT_NAME, "bogus", request, parameters), BAD_REQUEST, "error_illegal_uuid", "bogus");
 		}
 	}
 
@@ -2133,5 +2188,386 @@ public class NodeEndpointTest extends AbstractMeshTest implements BasicRestTestc
 		List<NodeReference> breadcrumb = node.getNodeResponse().getBreadcrumb();
 		assertEquals(1, breadcrumb.size());
 		assertEquals(node.getNodeResponse().getUuid(), breadcrumb.get(0).getUuid());
+	}
+
+	/**
+	 * Test creating a node without publishing it
+	 */
+	@Test
+	public void testCreateAndDoNotPublishNode() {
+		NodeResponse created = create(false);
+		assertThat(created).hasVersion("0.1").hasLanguageVariant("en", false);
+	}
+
+	/**
+	 * Test creating a node and publishing it with the same call
+	 */
+	@Test
+	public void testCreateAndPublishNode() {
+		NodeResponse created = create(true);
+		assertThat(created).hasVersion("1.0").hasLanguageVariant("en", true);
+	}
+
+	/**
+	 * Test upserting a node without publishing it
+	 */
+	@Test
+	public void testUpsertAndDoNotPublishNode() {
+		String uuid = UUIDUtil.randomUUID();
+		upsert(uuid, "Created", false);
+		NodeResponse updated = upsert(uuid, "Updated", false);
+		assertThat(updated).hasVersion("0.2").hasLanguageVariant("en", false);
+	}
+
+	/**
+	 * Test upserting a node and publishing it with the same call
+	 */
+	@Test
+	public void testUpsertAndPublishNode() {
+		String uuid = UUIDUtil.randomUUID();
+		upsert(uuid, "Created", true);
+		NodeResponse updated = upsert(uuid, "Updated", true);
+		assertThat(updated).hasVersion("2.0").hasLanguageVariant("en", true);
+	}
+
+	@Test
+	public void testEmptyUpsertAndPublishNode() {
+		String uuid = UUIDUtil.randomUUID();
+		upsert(uuid, "Created", false);
+		NodeResponse updated = upsert(uuid, null, true);
+		assertThat(updated).hasVersion("1.0").hasLanguageVariant("en", true);
+	}
+
+	/**
+	 * Test updating a node without publishing it
+	 */
+	@Test
+	public void testUpdateAndNoNotPublishNode() {
+		NodeResponse created = create(false);
+		NodeResponse updated = update(created, "some new title", false);
+		assertThat(updated).hasVersion("0.2").hasLanguageVariant("en", false);
+	}
+
+	/**
+	 * Test updating a node and publishing it with the same call
+	 */
+	@Test
+	public void testUpdateAndPublishNode() {
+		NodeResponse created = create(false);
+		NodeResponse updated = update(created, "some new title", true);
+		assertThat(updated).hasVersion("1.0").hasLanguageVariant("en", true);
+	}
+
+	@Test
+	public void testEmptyUpdateAndPublishNode() {
+		NodeResponse created = create(false);
+		NodeResponse updated = update(created, null, true);
+		assertThat(updated).hasVersion("1.0").hasLanguageVariant("en", true);
+	}
+
+	/**
+	 * Test creating a node and not setting role permissions
+	 */
+	@Test
+	public void testCreateNodeAndDoNotSetRolePermissions() {
+		NodeResponse created = create(false);
+		RoleReference testRole = tx(() -> role().transformToReference());
+
+		ObjectPermissionResponse rolePermissions = call(
+				() -> client().getNodeRolePermissions(PROJECT_NAME, created.getUuid()));
+		assertThat(rolePermissions.getReadPublished()).as("roles with permission").containsOnly(testRole);
+	}
+
+	/**
+	 * Test creating a node and setting role permissions
+	 */
+	@Test
+	public void testCreateNodeAndSetRolePermissions() {
+		RoleReference anonymous = tx(() -> anonymousRole().transformToReference());
+		NodeResponse created = create(false, anonymous.getName());
+
+		ObjectPermissionResponse rolePermissions = call(
+				() -> client().getNodeRolePermissions(PROJECT_NAME, created.getUuid()));
+		assertThat(rolePermissions.getReadPublished()).as("roles with permission").containsOnly(anonymous);
+	}
+
+	/**
+	 * Test upserting a node and not setting role permissions
+	 */
+	@Test
+	public void testUpsertNodeAndDoNotSetRolePermissions() {
+		String uuid = UUIDUtil.randomUUID();
+		upsert(uuid, "Created", false);
+		NodeResponse updated = upsert(uuid, "Updated", false);
+		RoleReference testRole = tx(() -> role().transformToReference());
+
+		ObjectPermissionResponse rolePermissions = call(
+				() -> client().getNodeRolePermissions(PROJECT_NAME, updated.getUuid()));
+		assertThat(rolePermissions.getReadPublished()).as("roles with permission").containsOnly(testRole);
+	}
+
+	/**
+	 * Test upserting a node and setting role permissions
+	 */
+	@Test
+	public void testUpsertNodeAndSetRolePermissions() {
+		RoleReference anonymous = tx(() -> anonymousRole().transformToReference());
+		String uuid = UUIDUtil.randomUUID();
+		upsert(uuid, "Created", false);
+		NodeResponse updated = upsert(uuid, "Updated", false, anonymous.getName());
+
+		ObjectPermissionResponse rolePermissions = call(
+				() -> client().getNodeRolePermissions(PROJECT_NAME, updated.getUuid()));
+		assertThat(rolePermissions.getReadPublished()).as("roles with permission").containsOnly(anonymous);
+	}
+
+	/**
+	 * Test upserting a node and setting role permissions
+	 */
+	@Test
+	public void testEmptyUpsertNodeAndSetRolePermissions() {
+		RoleReference anonymous = tx(() -> anonymousRole().transformToReference());
+		String uuid = UUIDUtil.randomUUID();
+		upsert(uuid, "Created", false);
+		NodeResponse updated = upsert(uuid, null, false, anonymous.getName());
+
+		ObjectPermissionResponse rolePermissions = call(
+				() -> client().getNodeRolePermissions(PROJECT_NAME, updated.getUuid()));
+		assertThat(rolePermissions.getReadPublished()).as("roles with permission").containsOnly(anonymous);
+	}
+
+	/**
+	 * Test updating a node and not setting role permissions
+	 */
+	@Test
+	public void testUpdateNodeAndDoNotSetRolePermissions() {
+		RoleReference testRole = tx(() -> role().transformToReference());
+		NodeResponse created = create(false);
+		update(created, "some new title", false);
+
+		ObjectPermissionResponse rolePermissions = call(
+				() -> client().getNodeRolePermissions(PROJECT_NAME, created.getUuid()));
+		assertThat(rolePermissions.getReadPublished()).as("roles with permission").containsOnly(testRole);
+	}
+
+	/**
+	 * Test updating a node and setting role permissions
+	 */
+	@Test
+	public void testUpdateNodeAndSetRolePermissions() {
+		RoleReference anonymous = tx(() -> anonymousRole().transformToReference());
+		NodeResponse created = create(false);
+		update(created, "some new title", false, anonymous.getName());
+
+		ObjectPermissionResponse rolePermissions = call(
+				() -> client().getNodeRolePermissions(PROJECT_NAME, created.getUuid()));
+		assertThat(rolePermissions.getReadPublished()).as("roles with permission").containsOnly(anonymous);
+	}
+
+	/**
+	 * Test updating a node and setting role permissions
+	 */
+	@Test
+	public void testEmptyUpdateNodeAndSetRolePermissions() {
+		RoleReference anonymous = tx(() -> anonymousRole().transformToReference());
+		NodeResponse created = create(false);
+		update(created, null, false, anonymous.getName());
+
+		ObjectPermissionResponse rolePermissions = call(
+				() -> client().getNodeRolePermissions(PROJECT_NAME, created.getUuid()));
+		assertThat(rolePermissions.getReadPublished()).as("roles with permission").containsOnly(anonymous);
+	}
+
+	/**
+	 * Test creating a language variant of the project root node
+	 */
+	@Test
+	public void testTranslateProjectRootNode() {
+		String projectName = "testproject";
+		String rootNodeSchemaName = "folder";
+		ProjectResponse project = call(() -> client()
+				.createProject(new ProjectCreateRequest().setName(projectName).setSchemaRef(rootNodeSchemaName)));
+
+		// update english version of root node
+		FieldMap fields = new FieldMapImpl();
+		fields.put("name", FieldUtil.createStringField("Name in English"));
+		fields.put("slug", FieldUtil.createStringField("english_root_node"));
+		NodeResponse updated = call(() -> client().updateNode(project.getName(), project.getRootNode().getUuid(),
+				new NodeUpdateRequest().setVersion("draft").setLanguage("en").setFields(fields)));
+		assertThat(updated).as("Updated root node in english")
+			.hasStringField("name", "Name in English")
+			.hasStringField("slug", "english_root_node");
+
+		// update german version of root node
+		fields.put("name", FieldUtil.createStringField("Name auf Deutsch"));
+		fields.put("slug", FieldUtil.createStringField("german_root_node"));
+		updated = call(() -> client().updateNode(project.getName(), project.getRootNode().getUuid(),
+				new NodeUpdateRequest().setVersion("draft").setLanguage("de").setFields(fields)));
+		assertThat(updated).as("Updated root node in german")
+			.hasStringField("name", "Name auf Deutsch")
+			.hasStringField("slug", "german_root_node");
+	}
+
+	/**
+	 * Test creating a language variant of a "normal" node (not the root node)
+	 */
+	@Test
+	public void testTranslatNonRootNode() {
+		String projectName = "testproject";
+		String rootNodeSchemaName = "folder";
+		ProjectResponse project = call(() -> client()
+				.createProject(new ProjectCreateRequest().setName(projectName).setSchemaRef(rootNodeSchemaName)));
+
+		FieldMap fields = new FieldMapImpl();
+		fields.put("name", FieldUtil.createStringField("Name in English"));
+		fields.put("slug", FieldUtil.createStringField("english_root_node"));
+		NodeResponse created = call(() -> client().createNode(project.getName(),
+				new NodeCreateRequest().setParentNodeUuid(project.getRootNode().getUuid()).setSchemaName(rootNodeSchemaName).setLanguage("en").setFields(fields)));
+		assertThat(created).as("Created node in english")
+			.hasStringField("name", "Name in English")
+			.hasStringField("slug", "english_root_node");
+
+		// update german version of root node
+		fields.put("name", FieldUtil.createStringField("Name auf Deutsch"));
+		fields.put("slug", FieldUtil.createStringField("german_root_node"));
+		NodeResponse updated = call(() -> client().updateNode(project.getName(), created.getUuid(),
+				new NodeUpdateRequest().setVersion("draft").setLanguage("de").setFields(fields)));
+		assertThat(updated).as("Updated root node in german")
+			.hasStringField("name", "Name auf Deutsch")
+			.hasStringField("slug", "german_root_node");
+
+	}
+
+	/**
+	 * Test that string fields can reach the connector defined string length (when not using multibyte utf8 characters)
+	 */
+	@Test
+	public void testLargeContent() {
+		int stringLengthLimit = tx(STRING_LENGTH_LIMIT);
+		String largeContent = RandomStringUtils.secure().nextAlphabetic(stringLengthLimit);
+
+		String parentNodeUuid = tx(() -> folder("news").getUuid());
+		NodeCreateRequest request = new NodeCreateRequest();
+		request.setSchemaName("content");
+		request.setLanguage("en");
+		request.getFields().put("title", FieldUtil.createStringField("some title"));
+		request.getFields().put("teaser", FieldUtil.createStringField("some teaser"));
+		request.getFields().put("slug", FieldUtil.createStringField("new-page.html"));
+		request.getFields().put("content", FieldUtil.createStringField(largeContent));
+		request.setParentNodeUuid(parentNodeUuid);
+
+		NodeResponse restNode = call(() -> client().createNode(PROJECT_NAME, request));
+		String nodeUuid = restNode.getUuid();
+		restNode = call(() -> client().findNodeByUuid(PROJECT_NAME, nodeUuid));
+		assertThat(restNode).hasStringField("content", largeContent);
+	}
+
+	/**
+	 * Test that when string fields exceed the connector defined string length, node creation will fail
+	 */
+	@Test
+	public void testTooLargeContent() {
+		int stringLengthLimit = tx(STRING_LENGTH_LIMIT);
+		String largeContent = RandomStringUtils.secure().nextAlphabetic(stringLengthLimit + 1);
+
+		String parentNodeUuid = tx(() -> folder("news").getUuid());
+		NodeCreateRequest request = new NodeCreateRequest();
+		request.setSchemaName("content");
+		request.setLanguage("en");
+		request.getFields().put("title", FieldUtil.createStringField("some title"));
+		request.getFields().put("teaser", FieldUtil.createStringField("some teaser"));
+		request.getFields().put("slug", FieldUtil.createStringField("new-page.html"));
+		request.getFields().put("content", FieldUtil.createStringField(largeContent));
+		request.setParentNodeUuid(parentNodeUuid);
+
+		call(() -> client().createNode(PROJECT_NAME, request), BAD_REQUEST, "node_error_string_field_value_too_long",
+				"content", String.valueOf(stringLengthLimit), String.valueOf(stringLengthLimit + 1));
+	}
+
+	/**
+	 * Create a node, optionally publish it (while creating), optionally set role permissions
+	 * @param publish true to publish
+	 * @param roles optional roles to set
+	 * @return node response
+	 */
+	protected NodeResponse create(boolean publish, String... roles) {
+		String parentNodeUuid = tx(() -> folder("news").getUuid());
+		NodeCreateRequest request = new NodeCreateRequest();
+		request.setSchemaName("content");
+		request.setLanguage("en");
+		request.getFields().put("title", FieldUtil.createStringField("some title"));
+		request.getFields().put("teaser", FieldUtil.createStringField("some teaser"));
+		request.getFields().put("slug", FieldUtil.createStringField("new-page.html"));
+		request.getFields().put("content", FieldUtil.createStringField("Blessed mealtime again!"));
+		request.setParentNodeUuid(parentNodeUuid);
+		if (publish) {
+			request.setPublish(true);
+		}
+		if (roles.length > 0) {
+			request.setGrant(new ObjectPermissionGrantRequest().setReadPublished(
+					Stream.of(roles).map(name -> new RoleReference().setName(name)).collect(Collectors.toList()))
+					.setExclusive(true));
+		}
+
+		return call(() -> client().createNode(PROJECT_NAME, request));
+	}
+
+	/**
+	 * Create a node, optionally publish it, optionally set role permissions
+	 * @param uuid Node UUID
+	 * @param title title
+	 * @param publish true to publish
+	 * @param roles optional roles to set
+	 * @return node response
+	 */
+	protected NodeResponse upsert(String uuid, String title, boolean publish, String... roles) {
+		String parentNodeUuid = tx(() -> folder("news").getUuid());
+		NodeUpsertRequest request = new NodeUpsertRequest();
+		request.setSchemaName("content");
+		request.setLanguage("en");
+		if (title != null) {
+			request.getFields().put("title", FieldUtil.createStringField(title));
+		}
+		request.getFields().put("teaser", FieldUtil.createStringField("some teaser"));
+		request.getFields().put("slug", FieldUtil.createStringField("new-page.html"));
+		request.getFields().put("content", FieldUtil.createStringField("Blessed mealtime again!"));
+		request.setParentNodeUuid(parentNodeUuid);
+		if (publish) {
+			request.setPublish(true);
+		}
+		if (roles.length > 0) {
+			request.setGrant(new ObjectPermissionGrantRequest().setReadPublished(
+					Stream.of(roles).map(name -> new RoleReference().setName(name)).collect(Collectors.toList()))
+					.setExclusive(true));
+		}
+
+		return call(() -> client().upsertNode(PROJECT_NAME, uuid, request));
+	}
+
+	/**
+	 * Update the given node, optionally publish it (while updating), optionally set role permissions
+	 * @param node node to update
+	 * @param title title
+	 * @param publish true to publish
+	 * @param roles optional roles to set
+	 * @return node response
+	 */
+	protected NodeResponse update(NodeResponse node, String title, boolean publish, String... roles) {
+		NodeUpdateRequest request = new NodeUpdateRequest();
+		request.setLanguage(node.getLanguage());
+		request.setVersion("draft");
+		if (title != null) {
+			request.getFields().put("title", FieldUtil.createStringField(title));
+		}
+		if (publish) {
+			request.setPublish(true);
+		}
+		if (roles.length > 0) {
+			request.setGrant(new ObjectPermissionGrantRequest().setReadPublished(
+					Stream.of(roles).map(name -> new RoleReference().setName(name)).collect(Collectors.toList()))
+					.setExclusive(true));
+		}
+
+		return call(() -> client().updateNode(PROJECT_NAME, node.getUuid(), request));
 	}
 }

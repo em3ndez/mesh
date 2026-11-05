@@ -4,24 +4,31 @@ import static com.gentics.mesh.core.data.perm.InternalPermission.CREATE_PERM;
 import static com.gentics.mesh.core.rest.error.Errors.conflict;
 import static com.gentics.mesh.core.rest.error.Errors.error;
 import static com.gentics.mesh.event.Assignment.UNASSIGNED;
+import static com.gentics.mesh.util.PreparationUtil.preparePermissions;
 import static io.netty.handler.codec.http.HttpResponseStatus.BAD_REQUEST;
 import static io.netty.handler.codec.http.HttpResponseStatus.FORBIDDEN;
 import static io.netty.handler.codec.http.HttpResponseStatus.NOT_FOUND;
 import static org.apache.commons.lang3.StringUtils.isEmpty;
 
 import java.util.Objects;
+import java.util.Optional;
 import java.util.stream.StreamSupport;
 
+import com.gentics.mesh.cache.NameCache;
 import com.gentics.mesh.context.BulkActionContext;
 import com.gentics.mesh.context.InternalActionContext;
+import com.gentics.mesh.core.data.HibCoreElement;
 import com.gentics.mesh.core.data.branch.HibBranch;
 import com.gentics.mesh.core.data.node.HibNode;
+import com.gentics.mesh.core.data.page.Page;
 import com.gentics.mesh.core.data.perm.InternalPermission;
 import com.gentics.mesh.core.data.project.HibProject;
 import com.gentics.mesh.core.data.tag.HibTag;
 import com.gentics.mesh.core.data.tagfamily.HibTagFamily;
 import com.gentics.mesh.core.data.user.HibUser;
+import com.gentics.mesh.core.db.CommonTx;
 import com.gentics.mesh.core.db.Tx;
+import com.gentics.mesh.core.rest.common.RestModel;
 import com.gentics.mesh.core.rest.tag.TagCreateRequest;
 import com.gentics.mesh.core.rest.tag.TagFamilyReference;
 import com.gentics.mesh.core.rest.tag.TagResponse;
@@ -30,8 +37,8 @@ import com.gentics.mesh.event.EventQueueBatch;
 import com.gentics.mesh.parameter.GenericParameters;
 import com.gentics.mesh.parameter.value.FieldsSet;
 
-import io.vertx.core.logging.Logger;
-import io.vertx.core.logging.LoggerFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * A persisting extension to {@link TagDao}
@@ -39,7 +46,7 @@ import io.vertx.core.logging.LoggerFactory;
  * @author plyhun
  *
  */
-public interface PersistingTagDao extends TagDao, PersistingDaoGlobal<HibTag> {
+public interface PersistingTagDao extends TagDao, PersistingDaoGlobal<HibTag>, PersistingNamedEntityDao<HibTag> {
 
 	Logger log = LoggerFactory.getLogger(PersistingTagDao.class);
 
@@ -75,7 +82,7 @@ public interface PersistingTagDao extends TagDao, PersistingDaoGlobal<HibTag> {
 	 */
 	default HibTag loadObjectByUuid(HibProject project, InternalActionContext ac, String uuid, InternalPermission perm,
 			boolean errorIfNotFound) {
-		return Tx.get().tagFamilyDao().findAllStream(project, ac, perm)
+		return Tx.get().tagFamilyDao().findAllStream(project, ac, perm, ac.getPagingParameters(), Optional.empty())
 				.map(tagFamily -> loadObjectByUuid(tagFamily, ac, uuid, perm, false))
 				.filter(Objects::nonNull)
 				.map(tag -> checkPerms(tag, uuid, ac, perm, errorIfNotFound))
@@ -132,7 +139,6 @@ public interface PersistingTagDao extends TagDao, PersistingDaoGlobal<HibTag> {
 
 		tagFamily.addTag(newTag);
 
-		batch.add(newTag.onCreated());
 		return newTag;
 	}
 
@@ -144,11 +150,12 @@ public interface PersistingTagDao extends TagDao, PersistingDaoGlobal<HibTag> {
 
 	@Override
 	default HibTag create(HibTagFamily tagFamily, String name, HibProject project, HibUser creator, String uuid) {
-		HibTag tag = createPersisted(uuid);
+		HibTag tag = createPersisted(uuid, t -> {
+			t.setName(name);
+			t.setCreated(creator);
+			t.setProject(project);
+		});
 
-		tag.setName(name);
-		tag.setCreated(creator);
-		tag.setProject(project);
 		tag.generateBucketId();
 
 		// And to the tag family
@@ -156,8 +163,9 @@ public interface PersistingTagDao extends TagDao, PersistingDaoGlobal<HibTag> {
 
 		// Set the tag family for the tag
 		tag.setTagFamily(tagFamily);
-		mergeIntoPersisted(tag);
-		return tag;
+		addBatchEvent(tag.onCreated());
+		uncacheSync(tag);
+		return mergeIntoPersisted(tag);
 	}
 
 	@Override
@@ -185,6 +193,21 @@ public interface PersistingTagDao extends TagDao, PersistingDaoGlobal<HibTag> {
 			}
 		}
 		return false;
+	}
+
+	@Override
+	default void beforeGetETagForPage(Page<? extends HibCoreElement<? extends RestModel>> page,
+			InternalActionContext ac) {
+		preparePermissions(ac.getUser(), page, ac);
+	}
+
+	@Override
+	default void beforeTransformToRestSync(Page<? extends HibCoreElement<? extends RestModel>> page,
+			InternalActionContext ac) {
+		GenericParameters generic = ac.getGenericParameters();
+		FieldsSet fields = generic.getFields();
+
+		preparePermissions(ac.getUser(), page, ac, fields);
 	}
 
 	@Override
@@ -220,32 +243,37 @@ public interface PersistingTagDao extends TagDao, PersistingDaoGlobal<HibTag> {
 	}
 
 	@Override
-	default void delete(HibTagFamily tagFamily, HibTag tag, BulkActionContext bac) {
-		delete(tag, bac);
+	default void delete(HibTagFamily tagFamily, HibTag tag) {
+		delete(tag);
 	}
 
 	@Override
-	default void delete(HibTag tag, BulkActionContext bac) {
+	default void delete(HibTag tag) {
 		String uuid = tag.getUuid();
 		String name = tag.getName();
 		if (log.isDebugEnabled()) {
 			log.debug("Deleting tag {" + uuid + ":" + name + "}");
 		}
-		bac.add(tag.onDeleted());
+		CommonTx.get().batch().add(tag.onDeleted());
 
 		NodeDao nodeDao = Tx.get().nodeDao();
 		// For node which have been previously tagged we need to fire the untagged event.
 		for (HibBranch branch : Tx.get().branchDao().findAll(tag.getProject())) {
 			for (HibNode node : getNodes(tag, branch)) {
-				bac.add(nodeDao.onTagged(node, tag, branch, UNASSIGNED));
+				CommonTx.get().batch().add(nodeDao.onTagged(node, tag, branch, UNASSIGNED));
 			}
 		}
 		deletePersisted(tag);
-		bac.process();
+		CommonTx.get().data().maybeGetBulkActionContext().ifPresent(BulkActionContext::process);
 	}
 
 	@Override
 	default void addTag(HibNode node, HibTag tag, HibBranch branch) {
 		node.addTag(tag, branch);
+	}
+
+	@Override
+	default Optional<NameCache<HibTag>> maybeGetCache() {
+		return Tx.maybeGet().map(CommonTx.class::cast).map(tx -> tx.data().mesh().tagNameCache());
 	}
 }

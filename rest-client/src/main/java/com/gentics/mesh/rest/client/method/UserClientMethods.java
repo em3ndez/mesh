@@ -1,6 +1,11 @@
 package com.gentics.mesh.rest.client.method;
 
 import com.gentics.mesh.core.rest.common.GenericMessageResponse;
+import com.gentics.mesh.core.rest.common.ObjectPermissionGrantRequest;
+import com.gentics.mesh.core.rest.common.ObjectPermissionResponse;
+import com.gentics.mesh.core.rest.common.ObjectPermissionRevokeRequest;
+import com.gentics.mesh.core.rest.user.UserAPITokenCreateRequest;
+import com.gentics.mesh.core.rest.user.UserAPITokenListResponse;
 import com.gentics.mesh.core.rest.user.UserAPITokenResponse;
 import com.gentics.mesh.core.rest.user.UserCreateRequest;
 import com.gentics.mesh.core.rest.user.UserListResponse;
@@ -103,20 +108,53 @@ public interface UserClientMethods {
 	MeshRequest<UserResetTokenResponse> getUserResetToken(String userUuid);
 
 	/**
-	 * Generate a new API token for the user. The token is valid until a new token is generated. Generating a new token will invalidate the previously generated
-	 * one.
+	 * Generate a new API token for the user.
 	 * 
 	 * @param userUuid
 	 *            User uuid
+	 * @param request request
 	 * @return
 	 */
-	MeshRequest<UserAPITokenResponse> issueAPIToken(String userUuid);
+	MeshRequest<UserAPITokenResponse> issueAPIToken(String userUuid, UserAPITokenCreateRequest request);
 
 	/**
-	 * Invalidate the currently active API token.
+	 * Invalidate the API Token with given uuid.
 	 * 
-	 * @param userUuid
+	 * @param userUuid User uuid
+	 * @param tokenUuid Token uuid
 	 * @return
 	 */
-	MeshRequest<GenericMessageResponse> invalidateAPIToken(String userUuid);
+	MeshRequest<GenericMessageResponse> invalidateAPIToken(String userUuid, String tokenUuid);
+
+	/**
+	 * Load API Tokens for the given user
+	 * @param userUuid User uuid
+	 * @param parameters optional parameters
+	 * @return
+	 */
+	MeshRequest<UserAPITokenListResponse> findAPITokens(String userUuid, ParameterProvider... parameters);
+
+	/**
+	 * Get the role permissions on the user
+	 * 
+	 * @param uuid Uuid of the user
+	 * @return request
+	 */
+	MeshRequest<ObjectPermissionResponse> getUserRolePermissions(String uuid);
+
+	/**
+	 * Grant permissions on the user to roles
+	 * @param uuid Uuid of the user
+	 * @param request request
+	 * @return mesh request
+	 */
+	MeshRequest<ObjectPermissionResponse> grantUserRolePermissions(String uuid, ObjectPermissionGrantRequest request);
+
+	/**
+	 * Revoke permissions on the user from roles
+	 * @param uuid Uuid of the user
+	 * @param request request
+	 * @return mesh request
+	 */
+	MeshRequest<ObjectPermissionResponse> revokeUserRolePermissions(String uuid, ObjectPermissionRevokeRequest request);
 }

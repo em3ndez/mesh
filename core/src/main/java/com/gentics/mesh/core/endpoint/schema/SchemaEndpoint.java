@@ -19,31 +19,34 @@ import javax.inject.Inject;
 
 import org.apache.commons.lang3.StringUtils;
 
-import com.gentics.mesh.auth.MeshAuthChainImpl;
+import com.gentics.mesh.auth.MeshAuthChain;
 import com.gentics.mesh.context.InternalActionContext;
+import com.gentics.mesh.core.db.Database;
+import com.gentics.mesh.core.endpoint.RolePermissionHandlingEndpoint;
+import com.gentics.mesh.core.endpoint.admin.LocalConfigApi;
+import com.gentics.mesh.etc.config.MeshOptions;
 import com.gentics.mesh.parameter.impl.GenericParametersImpl;
 import com.gentics.mesh.parameter.impl.PagingParametersImpl;
 import com.gentics.mesh.parameter.impl.SchemaUpdateParametersImpl;
 import com.gentics.mesh.parameter.impl.VersioningParametersImpl;
 import com.gentics.mesh.rest.InternalEndpointRoute;
-import com.gentics.mesh.router.route.AbstractInternalEndpoint;
 
 /**
  * Verticle for /api/v2/schemas endpoint
  */
-public class SchemaEndpoint extends AbstractInternalEndpoint {
+public class SchemaEndpoint extends RolePermissionHandlingEndpoint {
 
 	private SchemaCrudHandler crudHandler;
 
 	private SchemaLock schemaLock;
 
 	public SchemaEndpoint() {
-		super("schemas", null);
+		super("schemas", null, null, null, null);
 	}
 
 	@Inject
-	public SchemaEndpoint(MeshAuthChainImpl chain, SchemaCrudHandler crudHandler, SchemaLock schemaLock) {
-		super("schemas", chain);
+	public SchemaEndpoint(MeshAuthChain chain, SchemaCrudHandler crudHandler, SchemaLock schemaLock, LocalConfigApi localConfigApi, Database db, MeshOptions options) {
+		super("schemas", chain, localConfigApi, db, options);
 		this.crudHandler = crudHandler;
 		this.schemaLock = schemaLock;
 	}
@@ -63,6 +66,8 @@ public class SchemaEndpoint extends AbstractInternalEndpoint {
 		addCreateHandler();
 		addUpdateHandler();
 		addDeleteHandler();
+
+		addRolePermissionHandler("schemaUuid", SCHEMA_VEHICLE_UUID, "schema", crudHandler, false);
 	}
 
 	private void addChangesHandler() {
@@ -89,7 +94,7 @@ public class SchemaEndpoint extends AbstractInternalEndpoint {
 			InternalActionContext ac = wrap(rc);
 			String schemaUuid = ac.getParameter("schemaUuid");
 			crudHandler.handleApplySchemaChanges(ac, schemaUuid);
-		});
+		}, isOrderedBlockingHandlers());
 	}
 
 	private void addCreateHandler() {
@@ -105,7 +110,7 @@ public class SchemaEndpoint extends AbstractInternalEndpoint {
 		endpoint.blockingHandler(rc -> {
 			InternalActionContext ac = wrap(rc);
 			crudHandler.handleCreate(ac);
-		});
+		}, isOrderedBlockingHandlers());
 	}
 
 	private void addDiffHandler() {
@@ -132,13 +137,14 @@ public class SchemaEndpoint extends AbstractInternalEndpoint {
 		endpoint.path("/:schemaUuid");
 		endpoint.addUriParameter("schemaUuid", "Uuid of the schema.", SCHEMA_VEHICLE_UUID);
 		endpoint.method(POST);
-		endpoint.description("Update the schema.");
+		endpoint.description("Update or create the schema.");
 		endpoint.consumes(APPLICATION_JSON);
 		endpoint.produces(APPLICATION_JSON);
+		
 		endpoint.addQueryParameters(SchemaUpdateParametersImpl.class);
 		endpoint.exampleRequest(schemaExamples.getSchemaUpdateRequest());
-		endpoint.exampleResponse(OK, schemaExamples.getSchemaResponse(), "Updated schema.");
-		endpoint.events(SCHEMA_UPDATED, SCHEMA_MIGRATION_START, SCHEMA_MIGRATION_FINISHED);
+		endpoint.exampleResponse(OK, schemaExamples.getSchemaResponse(), "Updated or new schema.");
+		endpoint.events(SCHEMA_CREATED, SCHEMA_UPDATED, SCHEMA_MIGRATION_START, SCHEMA_MIGRATION_FINISHED);
 		endpoint.blockingHandler(rc -> {
 			// Update operations should always be executed sequentially - never in parallel
 			synchronized (schemaLock.mutex()) {
@@ -146,7 +152,7 @@ public class SchemaEndpoint extends AbstractInternalEndpoint {
 				String uuid = ac.getParameter("schemaUuid");
 				crudHandler.handleUpdate(ac, uuid);
 			}
-		}, true);
+		}, isOrderedBlockingHandlers());
 	}
 
 	private void addDeleteHandler() {
@@ -162,7 +168,7 @@ public class SchemaEndpoint extends AbstractInternalEndpoint {
 			InternalActionContext ac = wrap(rc);
 			String uuid = ac.getParameter("schemaUuid");
 			crudHandler.handleDelete(ac, uuid);
-		});
+		}, isOrderedBlockingHandlers());
 	}
 
 	private void addReadHandlers() {

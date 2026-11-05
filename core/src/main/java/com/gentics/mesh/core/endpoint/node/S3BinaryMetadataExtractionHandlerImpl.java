@@ -13,10 +13,14 @@ import static org.apache.commons.lang3.StringUtils.isEmpty;
 import java.io.File;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 import javax.inject.Inject;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.gentics.mesh.context.InternalActionContext;
 import com.gentics.mesh.core.data.HibLanguage;
@@ -48,12 +52,12 @@ import com.gentics.mesh.core.verticle.handler.HandlerUtilities;
 import com.gentics.mesh.etc.config.MeshOptions;
 import com.gentics.mesh.json.JsonUtil;
 import com.gentics.mesh.util.NodeUtil;
+import com.gentics.mesh.util.UUIDUtil;
 
 import io.reactivex.Observable;
 import io.reactivex.Single;
-import io.vertx.core.http.impl.MimeMapping;
-import io.vertx.core.logging.Logger;
-import io.vertx.core.logging.LoggerFactory;
+import io.vertx.core.Future;
+import io.vertx.core.http.MimeMapping;
 import io.vertx.ext.web.FileUpload;
 import io.vertx.reactivex.core.Vertx;
 
@@ -73,7 +77,8 @@ public class S3BinaryMetadataExtractionHandlerImpl extends AbstractHandler {
 
 	@Inject
 	public S3BinaryMetadataExtractionHandlerImpl(Database db, S3BinaryStorage s3BinaryStorage, HandlerUtilities utils,
-												 Vertx rxVertx, MeshOptions options, S3Binaries s3binaries, S3BinaryProcessorRegistryImpl s3binaryProcessorRegistry) {
+			Vertx rxVertx, MeshOptions options, S3Binaries s3binaries,
+			S3BinaryProcessorRegistryImpl s3binaryProcessorRegistry) {
 		this.db = db;
 		this.vertx = rxVertx;
 		this.s3BinaryStorage = s3BinaryStorage;
@@ -87,8 +92,8 @@ public class S3BinaryMetadataExtractionHandlerImpl extends AbstractHandler {
 	 * Handle a request to create a new field.
 	 *
 	 * @param ac
-	 * @param nodeUuid   UUID of the node which should be updated
-	 * @param fieldName  Name of the field which should be created
+	 * @param nodeUuid  UUID of the node which should be updated
+	 * @param fieldName Name of the field which should be created
 	 */
 	public void handleMetadataExtraction(InternalActionContext ac, String nodeUuid, String fieldName) {
 		validateParameter(nodeUuid, "uuid");
@@ -106,89 +111,108 @@ public class S3BinaryMetadataExtractionHandlerImpl extends AbstractHandler {
 		}
 
 		S3UploadContext ctx = new S3UploadContext();
-
-
 		String bucket = options.getS3Options().getBucket();
-		String objectKey = nodeUuid + "/" + fieldName;
-		s3BinaryStorage
-				.exists(bucket, objectKey)
-				//read from aws and return buffer with data
+		AtomicReference<String> objectKey = new AtomicReference<>(S3BinaryStorage.makeObjectKey(nodeUuid, fieldName, languageTag));
+		s3BinaryStorage.exists(bucket, objectKey.get())
 				.flatMap(res -> {
 					if (res) {
-						return s3BinaryStorage.read(bucket, objectKey).singleOrError();
-					} else return Single.error(error(INTERNAL_SERVER_ERROR, "image_error_reading_failed"));
+						return Single.just(res);
+					} else {
+						// Old format, required for the pre-fix environments
+						objectKey.set(nodeUuid + "/" + fieldName);
+						return s3BinaryStorage.exists(bucket, objectKey.get());
+					}
 				})
-				.onErrorResumeNext(e ->  Single.error(e))
+				// read from aws and return buffer with data
+				.flatMap(res -> {
+					if (res) {
+						return s3BinaryStorage.read(bucket, objectKey.get()).singleOrError();
+					} else {
+						return Single.error(error(BAD_REQUEST, "image_error_reading_failed"));
+					}
+				}).onErrorResumeNext(e -> Single.error(e))
 				.flatMap(fileBuffer -> {
-			if (nonNull(fileBuffer) && fileBuffer.getBytes().length > 0) {
-				return db.singleTx(tx -> s3binaries
-						.findByS3ObjectKey(nodeUuid + "/" + fieldName)
-						.runInExistingTx(tx)
-						.getFileName())
-						.flatMap(fileName -> {
-							String mimeTypeForFilename = MimeMapping.getMimeTypeForFilename(fileName);
-							File tmpFile = new File(System.getProperty("java.io.tmpdir"), fileName);
-							vertx.fileSystem().writeFileBlocking(tmpFile.getAbsolutePath(), fileBuffer);
-							byte[] fileData = fileBuffer.getBytes();
-							FileUpload fileUpload = new FileUpload() {
+					if (nonNull(fileBuffer) && fileBuffer.getBytes().length > 0) {
+						return db.singleTx(tx -> s3binaries.findByS3ObjectKey(objectKey.get())
+								.runInExistingTx(tx).getFileName()).flatMap(fileName -> {
+									String mimeTypeForFilename = MimeMapping.mimeTypeForFilename(fileName);
+									File tmpFile = new File(System.getProperty("java.io.tmpdir"), UUIDUtil.randomUUID() + ".upload");
+									vertx.fileSystem().writeFileBlocking(tmpFile.getAbsolutePath(), fileBuffer);
+									byte[] fileData = fileBuffer.getBytes();
+									FileUpload fileUpload = new FileUpload() {
 
-								@Override
-								public String uploadedFileName() {
-									return tmpFile.getAbsolutePath();
-								}
+										@Override
+										public String uploadedFileName() {
+											return tmpFile.getAbsolutePath();
+										}
 
-								@Override
-								public long size() {
-									return fileData.length;
-								}
+										@Override
+										public long size() {
+											return fileData.length;
+										}
 
-								@Override
-								public String name() {
-									return fileName;
-								}
+										@Override
+										public String name() {
+											return fileName;
+										}
 
-								@Override
-								public String fileName() {
-									return fileName;
-								}
+										@Override
+										public String fileName() {
+											return fileName;
+										}
 
-								@Override
-								public String contentType() {
-									return mimeTypeForFilename;
-								}
+										@Override
+										public String contentType() {
+											return mimeTypeForFilename;
+										}
 
-								@Override
-								public String contentTransferEncoding() {
-									// TODO Auto-generated method stub
-									return null;
-								}
+										@Override
+										public String contentTransferEncoding() {
+											// TODO Auto-generated method stub
+											return null;
+										}
 
-								@Override
-								public String charSet() {
-									// TODO Auto-generated method stub
-									return "UTF-8";
-								}
-							};
-							ctx.setFileUpload(fileUpload);
-							ctx.setS3ObjectKey(nodeUuid + "/" + fieldName);
-							ctx.setFileName(fileName);
-							ctx.setFileSize(fileData.length);
-							return Single.just(fileUpload);
-						}).flatMap(fileUpload -> postProcessUpload(new S3BinaryDataProcessorContext(ac, nodeUuid, fieldName, fileUpload))
-									.toList()).flatMap(postProcess ->  storeUploadInGraph(ac, postProcess, ctx, nodeUuid, languageTag, nodeVersion, fieldName));
-			} else {
-				log.error("Could not read input image");
-				return Single.error(error(INTERNAL_SERVER_ERROR, "image_error_reading_failed"));
-			}
-		}).onErrorResumeNext(e ->  Single.error(e))
-				.subscribe(model ->
-				ac.send(model, OK), ac::fail);
+										@Override
+										public String charSet() {
+											// TODO Auto-generated method stub
+											return "UTF-8";
+										}
+
+										@Override
+										public boolean cancel() {
+											return false;
+										}
+
+										@Override
+										public Future<Void> delete() {
+											return vertx.getDelegate().fileSystem().delete(tmpFile.getAbsolutePath());
+										}
+
+									};
+									ctx.setFileUpload(fileUpload);
+									ctx.setS3ObjectKey(objectKey.get());
+									ctx.setFileName(fileName);
+									ctx.setFileSize(fileData.length);
+									return Single.just(fileUpload);
+								})
+								.flatMap(
+										fileUpload -> postProcessUpload(new S3BinaryDataProcessorContext(ac, nodeUuid,
+												fieldName, languageTag, fileUpload))
+												.toList()
+												.flatMap(postProcess -> storeUploadInGraph(ac, postProcess, ctx,
+														nodeUuid, languageTag, nodeVersion, fieldName))
+												.doOnEvent((response, error) -> {
+													vertx.getDelegate().fileSystem().deleteBlocking(fileUpload.uploadedFileName());
+												}));
+					} else {
+						return Single.error(error(INTERNAL_SERVER_ERROR, "image_error_reading_failed"));
+					}
+				}).onErrorResumeNext(e -> Single.error(e)).subscribe(model -> ac.send(model, OK), ac::fail);
 	}
 
-	private Single<NodeResponse> storeUploadInGraph(InternalActionContext ac, List<Consumer<S3HibBinaryField>> fieldModifier, S3UploadContext context,
-													String nodeUuid,
-													String languageTag, String nodeVersion,
-													String fieldName) {
+	private Single<NodeResponse> storeUploadInGraph(InternalActionContext ac,
+			List<Consumer<S3HibBinaryField>> fieldModifier, S3UploadContext context, String nodeUuid,
+			String languageTag, String nodeVersion, String fieldName) {
 		FileUpload upload = context.getFileUpload();
 		String s3ObjectKey = context.getS3ObjectKey();
 		String fileName = context.getFileName();
@@ -205,17 +229,20 @@ public class S3BinaryMetadataExtractionHandlerImpl extends AbstractHandler {
 			if (s3binary == null) {
 				s3binary = s3binaries.create(nodeUuid, s3ObjectKey, fileName).runInExistingTx(tx);
 			}
-			HibLanguage language = tx.languageDao().findByLanguageTag(languageTag);
+			HibLanguage language = tx.languageDao().findByLanguageTag(project, languageTag);
 			if (language == null) {
 				throw error(NOT_FOUND, "error_language_not_found", languageTag);
 			}
 
 			// Load the current latest draft
-			HibNodeFieldContainer latestDraftVersion = contentDao.getFieldContainer(node, languageTag, branch, ContainerType.DRAFT);
+			HibNodeFieldContainer latestDraftVersion = contentDao.getFieldContainer(node, languageTag, branch,
+					ContainerType.DRAFT);
 
 			if (latestDraftVersion == null) {
-				// latestDraftVersion = node.createGraphFieldContainer(language, branch, ac.getUser());
-				// TODO Maybe it would be better to just create a new field container for the language?
+				// latestDraftVersion = node.createGraphFieldContainer(language, branch,
+				// ac.getUser());
+				// TODO Maybe it would be better to just create a new field container for the
+				// language?
 				// In that case we would also need to:
 				// * check for segment field conflicts
 				// * update display name
@@ -224,24 +251,28 @@ public class S3BinaryMetadataExtractionHandlerImpl extends AbstractHandler {
 			}
 
 			// Load the base version field container in order to create the diff
-			HibNodeFieldContainer baseVersionContainer = contentDao.findVersion(node, languageTag, branch.getUuid(), nodeVersion);
+			HibNodeFieldContainer baseVersionContainer = contentDao.findVersion(node, languageTag, branch.getUuid(),
+					nodeVersion);
 			if (baseVersionContainer == null) {
 				throw error(BAD_REQUEST, "node_error_draft_not_found", nodeVersion, languageTag);
 			}
 
 			List<FieldContainerChange> baseVersionDiff = contentDao.compareTo(baseVersionContainer, latestDraftVersion);
-			List<FieldContainerChange> requestVersionDiff = Arrays.asList(new FieldContainerChange(fieldName, FieldChangeTypes.UPDATED));
+			List<FieldContainerChange> requestVersionDiff = Arrays
+					.asList(new FieldContainerChange(fieldName, FieldChangeTypes.UPDATED));
 
 			// Compare both sets of change sets
 			List<FieldContainerChange> intersect = baseVersionDiff.stream().filter(requestVersionDiff::contains)
 					.collect(Collectors.toList());
 
-			// Check whether the update was not based on the latest draft version. In that case a conflict check needs to occur.
+			// Check whether the update was not based on the latest draft version. In that
+			// case a conflict check needs to occur.
 			if (!latestDraftVersion.getVersion().equals(nodeVersion)) {
 
 				// Check whether a conflict has been detected
 				if (intersect.size() > 0) {
-					NodeVersionConflictException conflictException = new NodeVersionConflictException("node_error_conflict_detected");
+					NodeVersionConflictException conflictException = new NodeVersionConflictException(
+							"node_error_conflict_detected");
 					conflictException.setOldVersion(baseVersionContainer.getVersion().toString());
 					conflictException.setNewVersion(latestDraftVersion.getVersion().toString());
 					for (FieldContainerChange fcc : intersect) {
@@ -261,12 +292,12 @@ public class S3BinaryMetadataExtractionHandlerImpl extends AbstractHandler {
 			}
 
 			// Create a new node version field container to store the upload
-			HibNodeFieldContainer newDraftVersion = contentDao.createFieldContainer(node, languageTag, branch, ac.getUser(),
-					latestDraftVersion,
-					true);
+			HibNodeFieldContainer newDraftVersion = contentDao.createFieldContainer(node, languageTag, branch,
+					ac.getUser(), latestDraftVersion, true);
 
 			// Get the potential existing field
-			S3HibBinaryField oldField = (S3HibBinaryField) contentDao.detachField(newDraftVersion.getS3Binary(fieldName));
+			S3HibBinaryField oldField = (S3HibBinaryField) contentDao
+					.detachField(newDraftVersion.getS3Binary(fieldName));
 
 			// Create the new field
 			S3HibBinaryField field = newDraftVersion.createS3Binary(fieldName, s3binary);
@@ -275,7 +306,8 @@ public class S3BinaryMetadataExtractionHandlerImpl extends AbstractHandler {
 			if (oldField != null) {
 				oldField.copyTo(field);
 
-				// If the old field was an image and the current upload is not an image we need to reset the custom image specific attributes.
+				// If the old field was an image and the current upload is not an image we need
+				// to reset the custom image specific attributes.
 				if (oldField.hasProcessableImage() && !NodeUtil.isProcessableImage(upload.contentType())) {
 					field.setImageDominantColor(null);
 				}
@@ -292,17 +324,21 @@ public class S3BinaryMetadataExtractionHandlerImpl extends AbstractHandler {
 			// Now get rid of the old field
 			newDraftVersion.removeField(oldField);
 
-			// If the binary field is the segment field, we need to update the webroot info in the node
-			if (field.getFieldKey().equals(contentDao.getSchemaContainerVersion(newDraftVersion).getSchema().getSegmentField())) {
-				contentDao.updateWebrootPathInfo(newDraftVersion, branch.getUuid(), "node_conflicting_segmentfield_upload");
+			// If the binary field is the segment field, we need to update the webroot info
+			// in the node
+			if (field.getFieldKey()
+					.equals(contentDao.getSchemaContainerVersion(newDraftVersion).getSchema().getSegmentField())) {
+				contentDao.updateWebrootPathInfo(newDraftVersion, branch.getUuid(),
+						"node_conflicting_segmentfield_upload");
 			}
 
-			if (ac.isPurgeAllowed() && contentDao.isAutoPurgeEnabled(newDraftVersion) && contentDao.isPurgeable(latestDraftVersion)) {
+			if (ac.isPurgeAllowed() && contentDao.isAutoPurgeEnabled(newDraftVersion)
+					&& contentDao.isPurgeable(latestDraftVersion)) {
 				contentDao.purge(latestDraftVersion);
 			}
 
 			batch.add(contentDao.onUpdated(newDraftVersion, branch.getUuid(), DRAFT));
-			batch.add(s3binary.onMetadataExtracted(nodeUuid,s3ObjectKey));
+			batch.add(s3binary.onMetadataExtracted(nodeUuid, s3ObjectKey));
 
 			return nodeDao.transformToRestSync(node, ac, 0);
 		});
@@ -313,17 +349,11 @@ public class S3BinaryMetadataExtractionHandlerImpl extends AbstractHandler {
 		String contentType = upload.contentType();
 		List<S3BinaryDataProcessor> processors = s3binaryProcessorRegistry.getProcessors(contentType);
 
-		return Observable.fromIterable(processors).flatMapMaybe(p -> p.process(ctx)
-				.doOnSuccess(s -> {
-					log.info(
-							"Processing of upload {" + upload.fileName() + "/" + upload.uploadedFileName() + "} in handler {" + p.getClass()
-									+ "} completed.");
-				})
-				.doOnComplete(() -> {
-					log.warn(
-							"Processing of upload {" + upload.fileName() + "/" + upload.uploadedFileName() + "} in handler {" + p.getClass()
-									+ "} completed.");
-				}));
+		return Observable.fromIterable(processors)
+				.flatMapMaybe(p -> p.process(ctx)
+						.doOnSuccess(s -> log.info("Processing of upload {" + upload.fileName() + "/" + upload.uploadedFileName() + "} in handler {" + p.getClass() + "} succeeded."))
+						.doOnComplete(() -> log.trace("Processing of upload {}/{} in handler {} completed.", upload.fileName(), upload.uploadedFileName(), p.getClass())
+					)
+			);
 	}
-
 }

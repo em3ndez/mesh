@@ -15,6 +15,7 @@ import org.junit.runners.Parameterized;
 
 import com.gentics.mesh.FieldUtil;
 import com.gentics.mesh.core.db.Tx;
+import com.gentics.mesh.core.endpoint.admin.consistency.UploadsConsistencyCheck;
 import com.gentics.mesh.core.rest.node.NodeCreateRequest;
 import com.gentics.mesh.test.context.AbstractMeshTest;
 
@@ -31,7 +32,7 @@ public abstract class AbstractBinaryFieldUploadEndpointParameterizedTest extends
 
 	@Parameterized.Parameters
 	public static Collection<Object> paramData() {
-		return IntStream.of(1,2,5,10,25,50,100,200).boxed().collect(Collectors.toList());
+		return IntStream.of(1, 2, 5, 10, 25, 50, 100).boxed().collect(Collectors.toList());
 	}
 
 	@Parameterized.Parameter
@@ -99,5 +100,9 @@ public abstract class AbstractBinaryFieldUploadEndpointParameterizedTest extends
 		}).lastOrError().ignoreElement().blockingAwait();
 
 		getTestContext().getInstanceProvider().setSyncWrites(initialSyncWrites.get());
+
+		tx(tx -> {
+			new UploadsConsistencyCheck().invoke(mesh().database(), tx, true);
+		});
 	}
 }

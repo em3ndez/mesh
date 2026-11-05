@@ -10,7 +10,6 @@
     "creator" : {
       "type" : "object",
       "id" : "urn:jsonschema:com:gentics:mesh:core:rest:user:UserReference",
-      "required" : true,
       "description" : "User reference of the creator of the element.",
       "properties" : {
         "firstName" : {
@@ -45,7 +44,7 @@
       "type" : "string",
       "required" : true,
       "description" : "The type of the job.",
-      "enum" : [ "schema", "microschema", "branch", "versionpurge" ]
+      "enum" : [ "schema", "microschema", "branch", "versionpurge", "schemaversionpurge", "microschemaversionpurge", "consistencycheck", "consistencyrepair", "imagecache" ]
     },
     "status" : {
       "type" : "string",
@@ -63,12 +62,10 @@
     },
     "stopDate" : {
       "type" : "string",
-      "required" : true,
       "description" : "The stop date of the job."
     },
     "startDate" : {
       "type" : "string",
-      "required" : true,
       "description" : "The start date of the job."
     },
     "completionCount" : {

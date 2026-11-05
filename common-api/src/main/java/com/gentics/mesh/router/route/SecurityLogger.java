@@ -6,7 +6,8 @@ import static com.google.common.net.HttpHeaders.X_FORWARDED_FOR;
 import java.util.Optional;
 import java.util.function.Supplier;
 
-import io.vertx.core.logging.Logger;
+import org.slf4j.Logger;
+
 import io.vertx.core.spi.logging.LogDelegate;
 import io.vertx.ext.auth.User;
 import io.vertx.ext.web.RoutingContext;
@@ -69,16 +70,6 @@ public class SecurityLogger implements LogDelegate {
 	}
 
 	@Override
-	public void fatal(Object message) {
-		delegate.fatal(withUserInfo(message));
-	}
-
-	@Override
-	public void fatal(Object message, Throwable t) {
-		delegate.fatal(withUserInfo(message), t);
-	}
-
-	@Override
 	public void error(Object message) {
 		delegate.error(withUserInfo(message));
 	}
@@ -86,16 +77,6 @@ public class SecurityLogger implements LogDelegate {
 	@Override
 	public void error(Object message, Throwable t) {
 		delegate.error(withUserInfo(message), t);
-	}
-
-	@Override
-	public void error(Object message, Object... objects) {
-		delegate.error(withUserInfo(message), objects);
-	}
-
-	@Override
-	public void error(Object message, Throwable t, Object... objects) {
-		delegate.error(withUserInfo(message), t, objects);
 	}
 
 	@Override
@@ -109,16 +90,6 @@ public class SecurityLogger implements LogDelegate {
 	}
 
 	@Override
-	public void warn(Object message, Object... objects) {
-		delegate.warn(withUserInfo(message), objects);
-	}
-
-	@Override
-	public void warn(Object message, Throwable t, Object... objects) {
-		delegate.warn(withUserInfo(message), t, objects);
-	}
-
-	@Override
 	public void info(Object message) {
 		delegate.info(withUserInfo(message));
 	}
@@ -126,16 +97,6 @@ public class SecurityLogger implements LogDelegate {
 	@Override
 	public void info(Object message, Throwable t) {
 		delegate.info(withUserInfo(message), t);
-	}
-
-	@Override
-	public void info(Object message, Object... objects) {
-		delegate.info(withUserInfo(message), objects);
-	}
-
-	@Override
-	public void info(Object message, Throwable t, Object... objects) {
-		delegate.info(withUserInfo(message), t, objects);
 	}
 
 	@Override
@@ -149,16 +110,6 @@ public class SecurityLogger implements LogDelegate {
 	}
 
 	@Override
-	public void debug(Object message, Object... objects) {
-		delegate.debug(withUserInfo(message), objects);
-	}
-
-	@Override
-	public void debug(Object message, Throwable t, Object... objects) {
-		delegate.debug(withUserInfo(message), t, objects);
-	}
-
-	@Override
 	public void trace(Object message) {
 		delegate.trace(withUserInfo(message));
 	}
@@ -169,16 +120,7 @@ public class SecurityLogger implements LogDelegate {
 	}
 
 	@Override
-	public void trace(Object message, Object... objects) {
-		delegate.trace(withUserInfo(message), objects);
-	}
-
-	@Override
-	public void trace(Object message, Throwable t, Object... objects) {
-		delegate.trace(withUserInfo(message), t, objects);
-	}
-
-	public LogDelegate getDelegate() {
-		return delegate.getDelegate();
+	public String implementation() {
+		return delegate.getName();
 	}
 }

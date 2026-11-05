@@ -1,0 +1,8 @@
+{
+    "name": "mesh-rest-client",
+    "$schema": "../../node_modules/nx/schemas/project-schema.json",
+    "sourceRoot": "packages/mesh-rest-client/src",
+    "projectType": "library",
+    "tags": ["lib"],
+    "targets": {}
+}

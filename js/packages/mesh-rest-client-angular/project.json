@@ -1,0 +1,30 @@
+{
+    "name": "mesh-rest-client-angular",
+    "$schema": "../../node_modules/nx/schemas/project-schema.json",
+    "projectType": "library",
+    "prefix": "gtx",
+    "sourceRoot": "packages/mesh-rest-client-angular/src",
+    "tags": [
+        "lib",
+        "angular"
+    ],
+    "targets": {
+        "build": {
+            "executor": "@nx/angular:ng-packagr-lite",
+            "options": {
+                "tsConfig": "packages/mesh-rest-client-angular/tsconfig.lib.json",
+                "project": "packages/mesh-rest-client-angular/ng-package.json"
+            },
+            "configurations": {
+                "production": {
+                    "tsConfig": "packages/mesh-rest-client-angular/tsconfig.lib.prod.json"
+                },
+                "development": {}
+            },
+            "defaultConfiguration": "production"
+        },
+        "test": {
+            "executor": "@nx/angular:unit-test"
+        }
+    }
+}

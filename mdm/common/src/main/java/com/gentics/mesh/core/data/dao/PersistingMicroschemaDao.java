@@ -5,6 +5,7 @@ import static com.gentics.mesh.core.rest.error.Errors.conflict;
 import static com.gentics.mesh.core.rest.error.Errors.error;
 import static com.gentics.mesh.event.Assignment.ASSIGNED;
 import static com.gentics.mesh.event.Assignment.UNASSIGNED;
+import static com.gentics.mesh.util.PreparationUtil.preparePermissions;
 import static io.netty.handler.codec.http.HttpResponseStatus.BAD_REQUEST;
 import static io.netty.handler.codec.http.HttpResponseStatus.FORBIDDEN;
 import static io.netty.handler.codec.http.HttpResponseStatus.NOT_FOUND;
@@ -14,11 +15,11 @@ import java.util.stream.Stream;
 
 import org.apache.commons.lang.NotImplementedException;
 
-import com.gentics.mesh.context.BulkActionContext;
 import com.gentics.mesh.context.InternalActionContext;
 import com.gentics.mesh.core.data.HibBaseElement;
+import com.gentics.mesh.core.data.HibCoreElement;
 import com.gentics.mesh.core.data.branch.HibBranch;
-import com.gentics.mesh.core.data.node.HibMicronode;
+import com.gentics.mesh.core.data.page.Page;
 import com.gentics.mesh.core.data.perm.InternalPermission;
 import com.gentics.mesh.core.data.project.HibProject;
 import com.gentics.mesh.core.data.schema.HibMicroschema;
@@ -28,6 +29,7 @@ import com.gentics.mesh.core.data.schema.handler.FieldSchemaContainerComparator;
 import com.gentics.mesh.core.data.user.HibUser;
 import com.gentics.mesh.core.db.CommonTx;
 import com.gentics.mesh.core.db.Tx;
+import com.gentics.mesh.core.rest.common.RestModel;
 import com.gentics.mesh.core.rest.event.project.ProjectMicroschemaEventModel;
 import com.gentics.mesh.core.rest.microschema.MicroschemaVersionModel;
 import com.gentics.mesh.core.rest.microschema.impl.MicroschemaModelImpl;
@@ -39,6 +41,8 @@ import com.gentics.mesh.core.result.TraversalResult;
 import com.gentics.mesh.event.Assignment;
 import com.gentics.mesh.event.EventQueueBatch;
 import com.gentics.mesh.json.JsonUtil;
+import com.gentics.mesh.parameter.GenericParameters;
+import com.gentics.mesh.parameter.value.FieldsSet;
 
 /**
  * A persisting extension to {@link MicroschemaDao}
@@ -48,15 +52,7 @@ import com.gentics.mesh.json.JsonUtil;
  */
 public interface PersistingMicroschemaDao 
 		extends MicroschemaDao, 
-			PersistingContainerDao<MicroschemaResponse, MicroschemaVersionModel, MicroschemaReference, HibMicroschema, HibMicroschemaVersion, MicroschemaModel> {
-
-	/**
-	 * Find all micronodes belonging to this microschema version
-	 * 
-	 * @param version
-	 * @return
-	 */
-	Result<? extends HibMicronode> findMicronodes(HibMicroschemaVersion version);
+			PersistingContainerDao<MicroschemaResponse, MicroschemaVersionModel, MicroschemaReference, HibMicroschema, HibMicroschemaVersion, MicroschemaModel>, PersistingNamedEntityDao<HibMicroschema> {
 
 	/**
 	 * Create a new microschema container.
@@ -158,7 +154,8 @@ public interface PersistingMicroschemaDao
 	default HibMicroschema create(HibProject root, InternalActionContext ac, EventQueueBatch batch, String uuid) {
 		HibMicroschema microschema = create(ac, batch, uuid);
 		assign(microschema, root, ac.getUser(), batch);
-		CommonTx.get().projectDao().mergeIntoPersisted(root);
+		PersistingProjectDao projectDao = CommonTx.get().projectDao();
+		projectDao.mergeIntoPersisted(root);
 		return microschema;
 	}
 
@@ -184,7 +181,6 @@ public interface PersistingMicroschemaDao
 		HibMicroschema container = create(microschema, requestUser, uuid, batch);
 		userRoot.inheritRolePermissions(requestUser, microschemaRoot, container);
 		mergeIntoPersisted(container);
-		batch.add(container.onCreated());
 		return container;
 	}
 
@@ -216,7 +212,10 @@ public interface PersistingMicroschemaDao
 			throw conflict(conflictingSchema.getUuid(), name, "schema_conflicting_name", name);
 		}
 
-		HibMicroschema container = createPersisted(uuid);
+		HibMicroschema container = createPersisted(uuid, m -> {
+			m.setCreated(user);
+			m.setName(microschema.getName());
+		});
 		HibMicroschemaVersion version = createPersistedVersion(container, v -> {
 			// set the initial version
 			microschema.setVersion("1.0");
@@ -225,10 +224,10 @@ public interface PersistingMicroschemaDao
 			v.setSchemaContainer(container);
 		});
 		container.setLatestVersion(version);
-		container.setCreated(user);
-		container.setName(microschema.getName());
 		container.generateBucketId();
 
+		addBatchEvent(container.onCreated());
+		uncacheSync(container);
 		return mergeIntoPersisted(container);
 	}
 
@@ -271,7 +270,7 @@ public interface PersistingMicroschemaDao
 		HibMicroschemaVersion foundVersion = null;
 
 		if (branch != null) {
-			foundVersion = branch.findLatestMicroschemaVersion(container);
+			foundVersion = findLatestVersion(branch, container);
 		} else if (version != null) {
 			foundVersion = findVersionByRev(container, version);
 		} else {
@@ -299,15 +298,30 @@ public interface PersistingMicroschemaDao
 	}
 
 	@Override
-	default void delete(HibMicroschema microschema, BulkActionContext bac) {
+	default void delete(HibMicroschema microschema) {
 		for (HibMicroschemaVersion version : findAllVersions(microschema)) {
-			if (findMicronodes(version).hasNext()) {
+			if (countVersionEdges(version) > 0) {
 				throw error(BAD_REQUEST, "microschema_delete_still_in_use", microschema.getUuid());
 			}
-			deleteVersion(version, bac);
+			deleteVersion(version);
 		}
-		bac.add(microschema.onDeleted());
+		CommonTx.get().batch().add(microschema.onDeleted());
 		deletePersisted(microschema);
+	}
+
+	@Override
+	default void beforeGetETagForPage(Page<? extends HibCoreElement<? extends RestModel>> page,
+			InternalActionContext ac) {
+		preparePermissions(ac.getUser(), page, ac);
+	}
+
+	@Override
+	default void beforeTransformToRestSync(Page<? extends HibCoreElement<? extends RestModel>> page,
+			InternalActionContext ac) {
+		GenericParameters generic = ac.getGenericParameters();
+		FieldsSet fields = generic.getFields();
+
+		preparePermissions(ac.getUser(), page, ac, fields);
 	}
 
 	@Override
@@ -317,9 +331,10 @@ public interface PersistingMicroschemaDao
 	}
 
 	@Override
-	default void delete(HibProject root, HibMicroschema element, BulkActionContext bac) {
-		unassign(element, root, bac.batch());
-		assignEvents(element, UNASSIGNED).forEach(bac::add);
+	default void delete(HibProject root, HibMicroschema element) {
+		EventQueueBatch batch = CommonTx.get().batch();
+		unassign(element, root, batch);
+		assignEvents(element, UNASSIGNED).forEach(batch::add);
 		// TODO should we delete the schema completely?
 		//delete(element, bac);
 	}

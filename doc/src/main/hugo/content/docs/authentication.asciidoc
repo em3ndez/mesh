@@ -1,0 +1,303 @@
+---
+title: Authentication
+---
+
+include::content/docs/variables.adoc-include[]
+
+== Overview
+
+Gentics Mesh provides multiple ways of authentication:
+
+* Authentication via login
+* Authentication via API token
+* Authentication via OAuth2
+* No authentication - Access via anonymous user
+
+NOTE: Currently, all data including media assets such as images, videos, and documents are secured and need authentication to be retrieved.
+
+WARNING: Sending user credentials as base64 encoded string, or as plaintext is highly insecure to be used on an open network. This method MUST not be used in scenarios other than debugging and development when the connection between server and client is trusted.
+
+=== Authentication Configuration
+
+Gentics Mesh uses JWT (JSON Web Token) to handle authentication. It is thus required to create a cryptograph key to sign and verify the generated JWT's. 
+Typically, if no keystore file has been provided, Gentics Mesh will create one on the basis of the configuration details in ```mesh.yml``` (see link:{{< relref "administration-guide.asciidoc" >}}#_conf[Configuration & Settings]). If the ```keystorePassword``` property is omitted, a password will be generated randomly and stored in the configuration file.
+
+[source,bash]
+----
+security:
+  tokenExpirationTime: 3600
+  keystorePassword: "secret"
+  keystorePath: "keystore.jceks"
+  algorithm: "HS256"
+----
+
+Alternatively, you can use the https://docs.oracle.com/javase/8/docs/technotes/tools/windows/keytool.html[Java keytool] to create a new keystore. 
+Here is an example on how to create a keystore which contains a HMacSHA256 key:
+[source,bash]
+----
+keytool -genseckey -keystore keystore.jceks -storetype jceks -storepass secret -keyalg HMacSHA256 -keysize 2048 -alias HS256 -keypass secret
+----
+
+After creating the keystore, you need to set the keystore password, the path to the keystore file, and the used algorithm in the ```mesh.yml``` configuration file (see link:{{< relref "administration-guide.asciidoc" >}}#_conf[Configuration & Settings]).
+
+== JWT 
+
+In order to be able to store and retrieve content, a Gentics Mesh user needs to authenticate (`username:password`). 
+
+Each way will store a JWT in a cookie which is used to authenticate the user for succeeding requests. 
+The token only lasts a certain amount of time (which can be configured in the ```mesh.yml``` file, see setting ```tokenExpirationTime``` in the link:{{< relref "administration-guide.asciidoc" >}}#_conf[Configuration & Settings] section), so it might be necessary to refresh the token. 
+The JWT will be automatically renewed with every request on the Gentics Mesh API. 
+
+=== Login
+
+A user can be logged in via a basic authentication request to `GET {apiLatest}/auth/login`.
+
+==== Basic Authentication Header
+In basic authentication, when a client requests a URL that requires authentication, the server requests the client to authenticate itself by sending a `401-Not Authorized` code. The client, in return, answers with login credentials sent in the ```authorization``` header:
+
+[source,bash]
+----
+authorization: Basic {base64_encode(username:password)}
+----
+
+In Gentics Mesh, a user can be authenticated by invoking a regular ```GET``` request to the ```{apiLatest}/auth/login``` endpoint including a basic authentication HTTP header.
+
+Example:
+
+[source,bash,subs="+attributes"]
+----
+curl -v -X GET   http://localhost:8080{apiLatest}/auth/login   -H 'authorization: Basic YWRtaW46YWRtaW4='
+----
+
+The response will be a valid JWT as well as set a cookie with the token.
+
+[source,bash]
+----
+{
+  "token" : "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1c2VyVXVpZCI6IjNjYjY2YzU0MmFlMzRiMDFiNjZjNTQyYWUzY2IwMWRiIiwiaWF0IjoxNDkxNzczMDYzLCJleHAiOjE0OTE3NzY2NjN9.8iG3I0Pe1M7J43pwbsBXiBOd6p0sn9dRxO3NfazVbOk="
+}
+----
+
+==== POST JSON Data
+Alternatively, the user can ```POST``` his or her credentials to the ```{apiLatest}/auth/login``` endpoint in order to retrieve a token.
+The JSON object must contain the following fields:
+
+* ```username```: The username of the user
+* ```password```: The password of the user
+
+If authentication has been successful, the server will respond with a JSON object containing a single property:
+
+* ```token```: The token to be sent on every subsequent request.
+
+Additionally, the token will also be provided in a cookie.
+
+Example:
+[source,bash,subs="+attributes"]
+----
+curl -v -X POST \
+  http://localhost:8080{apiLatest}/auth/login \
+  -H 'content-type: application/json' \
+  -d '{
+  "username" : "admin",
+  "password" : "admin"
+}'
+----
+
+[source,bash,subs="+attributes"]
+----
+
+*   Trying ::1...
+* TCP_NODELAY set
+* Connected to localhost (::1) port 8080 (#0)
+> POST {apiLatest}/auth/login HTTP/1.1
+> Host: localhost:8080
+> User-Agent: curl/7.50.3
+> Accept: */*
+> content-type: application/json
+> Content-Length: 50
+> 
+* upload completely sent off: 50 out of 50 bytes
+< HTTP/1.1 200 OK
+< Content-Type: application/json; charset=utf-8
+< Cache-Control: no-cache
+< Content-Length: 208
+< Set-Cookie: mesh.token=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1c2VyVXVpZCI6IjNjYjY2YzU0MmFlMzRiMDFiNjZjNTQyYWUzY2IwMWRiIiwiaWF0IjoxNDkxNzczODU0LCJleHAiOjE0OTE3Nzc0NTR9._qt3Eufi7-3jnvgQ8lfe_KwJbd5ePwx5jOFrCK9w76A=; Max-Age=3600; Expires=Sun, 9 Apr 2017 22:37:34 GMT; Path=/
+< 
+{
+  "token" : "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1c2VyVXVpZCI6IjNjYjY2YzU0MmFlMzRiMDFiNjZjNTQyYWUzY2IwMWRiIiwiaWF0IjoxNDkxNzczODU0LCJleHAiOjE0OTE3Nzc0NTR9._qt3Eufi7-3jnvgQ8lfe_KwJbd5ePwx5jOFrCK9w76A="
+* Curl_http_done: called premature == 0
+* Connection #0 to host localhost left intact
+}
+----
+
+Both login methods will yield a JSON web token.
+
+For further requests, the JWT can be provided in two ways. By default it is passed along with a cookie value. E.g., this is useful for embedding binary image nodes directly in HTML, since the browser will automatically handle authentication on the basis of the cookie.
+Alternatively, the token can be passed along within the ```Authorization``` header which includes the regular JWT ```Bearer <Token>```, where ```<Token>``` is the token you received from the login/cookie.
+
+[source,bash,subs="+attributes"]
+----
+curl -X GET \
+  http://localhost:8080{apiLatest}/demo/nodes \
+  -H 'Authorization: Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1c2VyVXVpZCI6IjNjYjY2YzU0MmFlMzRiMDFiNjZjNTQyYWUzY2IwMWRiIiwiaWF0IjoxNDkxNzY1NDEzLCJleHAiOjE0OTE3NjkwMTN9.UY8OgjiK5qyZobAWt6X1Vd1Z-zg68BeJgGZKbW4Ucj0=' \
+----
+
+=== API Token
+
+API tokens can be created with optional expiration. This is different from regular tokens which will be issued when calling `{apiLatest}/auth/login`. 
+
+WARNING: Leaking an API token is potentially dangerous and thus the API token should only be used in combination with a secure connection.
+
+Typical use cases for API tokens are backend implementations which constantly communicate with Gentics Mesh using a secure or local connection.
+
+Tokens can be issued per user with ```POST {apiLatest}/users/:userUuid/token```. It must be given a unique name and can optionally have an expiration date.
+Note that update permissions is required on the user associated with the provided userUuid.
+
+Since the token is just a regular JWT you just need to add it to your request `Authorization` header field.
+
+[source,bash,subs="+attributes"]
+----
+curl -X GET \
+  http://localhost:8080{apiLatest}/demo/nodes \
+  -H 'Authorization: Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1c2VyVXVpZCI6IjNjYjY2YzU0MmFlMzRiMDFiNjZjNTQyYWUzY2IwMWRiIiwiaWF0IjoxNDkxNzY1NDEzLCJleHAiOjE0OTE3NjkwMTN9.UY8OgjiK5qyZobAWt6X1Vd1Z-zg68BeJgGZKbW4Ucj0=' \
+----
+
+It is possible to manually revoke a previously issued token via ```DELETE {apiLatest}/users/:userUuid/token/:tokenUuid```. Once the token is invalidated it can no longer be used for authentication. This requires update permission on the user associated with the provided userUuid.
+
+=== Anonymous Access 
+
+Gentics Mesh first and foremost keeps your content safe - all data including media assets such as images, videos, and documents are secured and need authentication to be retrieved. However, sometimes it may be desirable to serve public content with Gentics Mesh. 
+
+That is why Gentics Mesh instances ship with an included ```anonymous``` user/role/group set. 
+If no authentication details are provided Gentics Mesh will automatically try to authenticate with the user ```anonymous```.
+
+You can assign ```readPublished``` permissions to the ```anonymous``` role for all elements you want to be publicly available.
+
+NOTE: Assigning further permissions would of course allow for other operations to be granted. 
+
+Anonymous access can be configured in the ```mesh.yml``` configuration file (see link:{{< relref "administration-guide.asciidoc" >}}#_conf[Configuration & Settings]):
+
+[source,yaml]
+----
+security:
+   enableAnonymousAccess: true
+----
+
+WARNING: Recreating a previously deleted ```anonymous``` user would automatically re-enable the feature if the configuration setting ```enableAnonymousAccess``` is set to ```true```.
+
+=== Forcing user to change password
+
+Since Gentics Mesh `0.31.5` it is possible to force a user to change their password on their next login.
+This is useful in situations when you want to create a user for someone else but want the user to set their password for themselves.
+
+To do so, link:/docs/api#users__post[create] or link:/docs/api#users__userUuid__post[update] a user and make sure to set the `forcedPasswordChange` flag to `true`.
+Now, when the user tries to login in regularly they will receive an error message with status code `400` telling them to provide a new password in the login request.
+The user has to additionally set the `newPassword` property when sending the link:/docs/api#auth_login_post[login request]. Then the password is changed and the user is logged in.
+
+== OAuth2 / OIDC
+
+Gentics Mesh supports OAuth2 / OIDC. Authorized users can pass their JWT to the API. Gentics Mesh will act as a *resource server* and process the provided access token. The token will be validated and the user request processed.
+
+image::../images/oauth2-flow.svg[OAuth 2.0 Flow,role="img-responsive", width=800]
+
+NOTE: Gentics Mesh will just utilize provided access tokens. The needed OAuth2 sign-in and token refresh handling *must* be done by the client.
+
+The provided OAuth2 user information will automatically be kept in-sync with the user that is present in Gentics Mesh.
+The synchronization process will also take care of creating new users and even roles and groups.
+
+=== Limitations
+
+WARNING: The Gentics Mesh UI is currently not Keycloak aware. The UI will thus not redirect you to the Keycloak login page. This functionality will be part of a future release of the Gentics Mesh UI.
+
+=== Configuration
+
+The list of public keys which will be used to validate and accept JWT's can be added to the `config/public-keys.json` file. The path to this file can be configured via the `security.publicKeysPath` setting in the `mesh.yml` file or via the `MESH_AUTH_PUBLIC_KEYS_PATH` environment variable.
+
+.public-keys.json
+[source,json]
+----
+{
+    "keys": [
+        {
+            "alg": "RS256",
+            "kty": "RSA",
+            "use": "sig",
+            "x5c": [
+                "MIIC/TCCAeWgAwIBAgIJA3kWNismjx1FMA0GCSqGSIb3DQEBCwUAMBwxGjAYBgNVBAMTEWpvdHNjaGkuYXV0aDAuY29tMB4XDTE5MDgyMDE4MTA0OVoXDTMzMDQyODE4MTA0OVowHDEaMBgGA1UEAxMRam90c2NoaS5hdXRoMC5jb20wggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDKs/QbFvLs43ZRT4LzbrMVWgHfmJ/gOtkVZxCdznHXFa9b8B4JNKLHvAZiK9L5JXA2D0jDYDHTbEYQiisZb52zpqWFRaHD8vt9fxDbqIFZDljseEJT9/FXlKFBjl2XwVLqnmBBhRo5k0iu5PPSYY6zfzSmg5IY4Tw9FA81zO3ZeJPxazyIsFhldcCauCiK87N+ifocjL139NwJCtrWBoExnAVsMD4wrp++N36iplsZTSlzBd9Fqo4OZtHThJk2CHMv506l/dlHfl1KSK+8By97DXBmPk4DWSCqEThfDD+So3DFBhn/B5pofN3zL0YaCiD6oBB+Y+wFc3nInv+cjTFnAgMBAAGjQjBAMA8GA1UdEwEB/wQFMAMBAf8wHQYDVR0OBBYEFCZuptNeNaVwG8cEYHv2ApQyqFEeMA4GA1UdDwEB/wQEAwIChDANBgkqhkiG9w0BAQsFAAOCAQEAPoh8yvw8nPKzhFWR2JnEmuLU8vK1azn822dIY4ZulHpoS8ATQod8Z+jB8ejszezOr3/JeMYRsvrwisQgbXJQTahwg6Xudx4NDJvEFZowOJ4nvRLRp0ZZGVFeKZFI/dxdcNntk+nCkcLCiO78Wq2mdjSnMp83ueO2X/YtRczjNsbUXGyeUoXkZMRydaqkAJDuSrGDLr12iOKw4hk/162AiUs4n6v2Wbfdh7PtE+PPutHWBSvKCMkSCh8exQ9h0MllgsBj6YzdOnhicv0g5BjM3qlp+1PlwNQmunVy5qcPu1ZNqbmrMnf7d6KjKw1iW0v3TnHaC09if4qFnj82J46m/g=="
+            ],
+            "n": "yrP0Gxby7ON2UU-C826zFVoB35if4DrZFWcQnc5x1xWvW_AeCTSix7wGYivS-SVwNg9Iw2Ax02xGEIorGW-ds6alhUWhw_L7fX8Q26iBWQ5Y7HhCU_fxV5ShQY5dl8FS6p5gQYUaOZNIruTz0mGOs380poOSGOE8PRQPNczt2XiT8Ws8iLBYZXXAmrgoivOzfon6HIy9d_TcCQra1gaBMZwFbDA-MK6fvjd-oqZbGU0pcwXfRaqODmbR04SZNghzL-dOpf3ZR35dSkivvAcvew1wZj5OA1kgqhE4Xww_kqNwxQYZ_weaaHzd8y9GGgog-qAQfmPsBXN5yJ7_nI0xZw",
+            "e": "AQAB",
+            "kid": "MDFCQ0E3RDM4QzIyNkIwNTNEQUQ4QzcxMDQ4NjM5NkFCOUMxNzY3Nw",
+            "x5t": "MDFCQ0E3RDM4QzIyNkIwNTNEQUQ4QzcxMDQ4NjM5NkFCOUMxNzY3Nw"
+        }
+    ]
+}
+----
+
+=== Mapping
+
+The access token properties will be used to synchronize the user data with Gentics Mesh.
+
+NOTE: By default the authenticated user will automatically be created within Gentics Mesh.
+
+Currently the following fields will be kept in sync with Gentics Mesh:
+
+.Mapped Fields
+[options="header"]
+|======
+| Token Field        | Gentics Mesh
+| email              | User email
+| given_name         | User firstname
+| family_name        | User lastname
+| preferred_username | User username
+|======
+
+The `preferred_username` field is the main id property which will be used to locate a user.
+
+NOTE: If the username changes a new user will be created in Gentics Mesh.
+
+NOTE: Authentication plugins can override this field via the `extractUsername()` methods.
+
+=== Authentication Service Plugin API
+
+By default groups and roles will not be handled by the synchronization process. It is however possible to provide a custom authentication plugin which can extract role and group information from the access token information.
+This way groups and roles can be directly created.
+
+It is also possible to write or use plugins which provide JWK's to Gentics Mesh.
+The `AuthServicePlugin` API provides methods which can be used to supply JWKs to Gentics Mesh.
+
+You can read more on this topic in the link:{{< relref "plugin-types/auth-service-plugin.asciidoc" >}}[Authentication Service Plugin API] section.
+
+== OAuth2 Providers
+
+=== Keycloak
+
+The public keys can be loaded from keycloak via the certs endpoint:
+
+[source,bash]
+----
+https://localhost:8443/auth/realms/realmName/protocol/openid-connect/certs
+----
+
+=== Auth0
+
+* Applications -> Settings -> Show Advanced Settings -> Endpoints -> JSON Web Key Set
+
+[source,bash]
+----
+https://yourName.auth0.com/.well-known/jwks.json
+----
+
+=== Okta
+
+The keys can be downloaded via:
+
+```
+https://yourName.okta.com/oauth2/v1/keys
+```
+
+
+=== Other
+
+For other providers it is required to find the matching JWK and add it to the list of accepted public keys. Public keys which are provided in PEM format can be converted to the JWK format using third party tools.
+

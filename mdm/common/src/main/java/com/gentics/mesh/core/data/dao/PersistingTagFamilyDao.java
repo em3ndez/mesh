@@ -3,21 +3,29 @@ package com.gentics.mesh.core.data.dao;
 import static com.gentics.mesh.core.data.perm.InternalPermission.CREATE_PERM;
 import static com.gentics.mesh.core.rest.error.Errors.conflict;
 import static com.gentics.mesh.core.rest.error.Errors.error;
+import static com.gentics.mesh.util.PreparationUtil.preparePermissions;
 import static io.netty.handler.codec.http.HttpResponseStatus.BAD_REQUEST;
 import static io.netty.handler.codec.http.HttpResponseStatus.FORBIDDEN;
 import static io.netty.handler.codec.http.HttpResponseStatus.NOT_FOUND;
 import static org.apache.commons.lang3.StringUtils.isEmpty;
 
+import java.util.Optional;
+
 import org.apache.commons.lang3.StringUtils;
 
+import com.gentics.mesh.cache.NameCache;
 import com.gentics.mesh.context.BulkActionContext;
 import com.gentics.mesh.context.InternalActionContext;
 import com.gentics.mesh.core.data.HibBaseElement;
+import com.gentics.mesh.core.data.HibCoreElement;
+import com.gentics.mesh.core.data.page.Page;
 import com.gentics.mesh.core.data.project.HibProject;
 import com.gentics.mesh.core.data.tag.HibTag;
 import com.gentics.mesh.core.data.tagfamily.HibTagFamily;
 import com.gentics.mesh.core.data.user.HibUser;
+import com.gentics.mesh.core.db.CommonTx;
 import com.gentics.mesh.core.db.Tx;
+import com.gentics.mesh.core.rest.common.RestModel;
 import com.gentics.mesh.core.rest.tag.TagFamilyCreateRequest;
 import com.gentics.mesh.core.rest.tag.TagFamilyResponse;
 import com.gentics.mesh.core.rest.tag.TagFamilyUpdateRequest;
@@ -25,8 +33,8 @@ import com.gentics.mesh.event.EventQueueBatch;
 import com.gentics.mesh.parameter.GenericParameters;
 import com.gentics.mesh.parameter.value.FieldsSet;
 
-import io.vertx.core.logging.Logger;
-import io.vertx.core.logging.LoggerFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * A persisting extension to {@link TagFamilyDao}
@@ -34,7 +42,7 @@ import io.vertx.core.logging.LoggerFactory;
  * @author plyhun
  *
  */
-public interface PersistingTagFamilyDao extends TagFamilyDao, PersistingRootDao<HibProject, HibTagFamily> {
+public interface PersistingTagFamilyDao extends TagFamilyDao, PersistingRootDao<HibProject, HibTagFamily>, PersistingNamedEntityDao<HibTagFamily> {
 
 	Logger log = LoggerFactory.getLogger(PersistingTagFamilyDao.class);
 
@@ -77,22 +85,21 @@ public interface PersistingTagFamilyDao extends TagFamilyDao, PersistingRootDao<
 		HibTagFamily tagFamily = create(project, name, requestUser, uuid);
 		userDao.inheritRolePermissions(requestUser, projectTagFamilyRoot, tagFamily);
 
-		batch.add(tagFamily.onCreated());
 		return tagFamily;
 	}
 
 
 	@Override
 	default HibTagFamily create(HibProject project, String name, HibUser user, String uuid) {
-		HibTagFamily tagFamily = createPersisted(project, uuid);
-		tagFamily.setName(name);
-		tagFamily.setCreated(user);
-
-		tagFamily.setProject(project);
+		HibTagFamily tagFamily = createPersisted(project, uuid, f -> {
+			f.setName(name);
+			f.setCreated(user);
+			f.setProject(project);
+		});
 		tagFamily.generateBucketId();
-		mergeIntoPersisted(project, tagFamily);
-
-		return tagFamily;
+		addBatchEvent(tagFamily.onCreated());
+		uncacheSync(tagFamily);
+		return mergeIntoPersisted(project, tagFamily);
 	}
 
 	@Override
@@ -119,7 +126,7 @@ public interface PersistingTagFamilyDao extends TagFamilyDao, PersistingRootDao<
 	}
 
 	@Override
-	default void delete(HibTagFamily tagFamily, BulkActionContext bac) {
+	default void delete(HibTagFamily tagFamily) {
 		TagDao tagDao = Tx.get().tagDao();
 
 		if (log.isDebugEnabled()) {
@@ -128,14 +135,29 @@ public interface PersistingTagFamilyDao extends TagFamilyDao, PersistingRootDao<
 
 		// Delete all the tags of the tag root
 		for (HibTag tag : tagDao.findAll(tagFamily).list()) {
-			tagDao.delete(tag, bac);
+			tagDao.delete(tag);
 		}
 
-		bac.add(tagFamily.onDeleted());
+		CommonTx.get().batch().add(tagFamily.onDeleted());
 
 		// Now delete the tag root element'
 		deletePersisted(tagFamily.getProject(), tagFamily);
-		bac.process();
+		CommonTx.get().data().maybeGetBulkActionContext().ifPresent(BulkActionContext::process);
+	}
+
+	@Override
+	default void beforeGetETagForPage(Page<? extends HibCoreElement<? extends RestModel>> page,
+			InternalActionContext ac) {
+		preparePermissions(ac.getUser(), page, ac);
+	}
+
+	@Override
+	default void beforeTransformToRestSync(Page<? extends HibCoreElement<? extends RestModel>> page,
+			InternalActionContext ac) {
+		GenericParameters generic = ac.getGenericParameters();
+		FieldsSet fields = generic.getFields();
+
+		preparePermissions(ac.getUser(), page, ac, fields);
 	}
 
 	@Override
@@ -167,8 +189,8 @@ public interface PersistingTagFamilyDao extends TagFamilyDao, PersistingRootDao<
 	}
 
 	@Override
-	default void delete(HibProject root, HibTagFamily element, BulkActionContext bac) {
-		delete(element, bac);
+	default void delete(HibProject root, HibTagFamily element) {
+		delete(element);
 	}
 
 	@Override
@@ -179,5 +201,10 @@ public interface PersistingTagFamilyDao extends TagFamilyDao, PersistingRootDao<
 	@Override
 	default void removeTag(HibTagFamily tagFamily, HibTag tag) {
 		tagFamily.removeTag(tag);
+	}
+
+	@Override
+	default Optional<NameCache<HibTagFamily>> maybeGetCache() {
+		return Tx.maybeGet().map(CommonTx.class::cast).map(tx -> tx.data().mesh().tagFamilyNameCache());
 	}
 }

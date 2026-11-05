@@ -12,7 +12,9 @@ import com.gentics.mesh.core.data.dao.UserDao;
 import com.gentics.mesh.core.data.node.NodeContent;
 import com.gentics.mesh.core.data.perm.InternalPermission;
 import com.gentics.mesh.core.db.Tx;
+import com.gentics.mesh.core.rest.common.ContainerType;
 import com.gentics.mesh.core.rest.error.PermissionException;
+import com.gentics.mesh.etc.config.HttpServerConfig;
 import com.gentics.mesh.graphql.context.GraphQLContext;
 
 import graphql.ExceptionWhileDataFetching;
@@ -26,8 +28,8 @@ import io.vertx.ext.web.RoutingContext;
  */
 public class GraphQLContextImpl extends InternalRoutingActionContextImpl implements GraphQLContext {
 
-	public GraphQLContextImpl(RoutingContext rc) {
-		super(rc);
+	public GraphQLContextImpl(RoutingContext rc, HttpServerConfig config) {
+		super(rc, config);
 	}
 
 	@Override
@@ -42,24 +44,23 @@ public class GraphQLContextImpl extends InternalRoutingActionContextImpl impleme
 	}
 
 	@Override
-	public boolean hasReadPerm(NodeContent content) {
+	public boolean hasReadPerm(NodeContent content, ContainerType type) {
 		HibNodeFieldContainer container = content.getContainer();
 		if (container != null) {
-			return hasReadPerm(container);
+			return hasReadPerm(container, type);
 		} else {
 			return true;
 		}
 	}
 
-	@Override
-	public boolean hasReadPerm(HibNodeFieldContainer container) {
+	public boolean hasReadPerm(HibNodeFieldContainer container, ContainerType type) {
 		Tx tx = Tx.get();
-		return tx.userDao().hasReadPermission(getUser(), container, tx.getBranch(this).getUuid());
+		return tx.userDao().hasReadPermission(getUser(), container, tx.getBranch(this).getUuid(), type.getHumanCode());
 	}
 
 	@Override
-	public Optional<GraphQLError> requiresReadPermSoft(HibNodeFieldContainer container, DataFetchingEnvironment env) {
-		if (container == null || hasReadPerm(container)) {
+	public Optional<GraphQLError> requiresReadPermSoft(HibNodeFieldContainer container, DataFetchingEnvironment env, ContainerType type) {
+		if (container == null || hasReadPerm(container, type)) {
 			return Optional.empty();
 		} else {
 			ContentDao contentDao = Tx.get().contentDao();

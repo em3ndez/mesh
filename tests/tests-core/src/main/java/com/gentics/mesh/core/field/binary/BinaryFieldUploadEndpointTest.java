@@ -19,17 +19,28 @@ import static org.junit.Assert.fail;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang.ArrayUtils;
 import org.junit.Ignore;
+import org.junit.Rule;
 import org.junit.Test;
+import org.mockserver.client.MockServerClient;
+import org.mockserver.junit.MockServerRule;
+import org.mockserver.model.HttpRequest;
+import org.mockserver.model.HttpResponse;
+import org.mockserver.verify.VerificationTimes;
 
 import com.gentics.mesh.FieldUtil;
 import com.gentics.mesh.core.data.HibNodeFieldContainer;
@@ -39,8 +50,10 @@ import com.gentics.mesh.core.data.dao.RoleDao;
 import com.gentics.mesh.core.data.node.HibNode;
 import com.gentics.mesh.core.data.node.field.HibBinaryField;
 import com.gentics.mesh.core.db.Tx;
+import com.gentics.mesh.core.endpoint.admin.consistency.UploadsConsistencyCheck;
 import com.gentics.mesh.core.rest.node.NodeResponse;
 import com.gentics.mesh.core.rest.node.NodeUpdateRequest;
+import com.gentics.mesh.core.rest.node.field.BinaryCheckStatus;
 import com.gentics.mesh.core.rest.node.field.BinaryField;
 import com.gentics.mesh.core.rest.node.field.binary.BinaryMetadata;
 import com.gentics.mesh.core.rest.schema.SchemaVersionModel;
@@ -50,17 +63,32 @@ import com.gentics.mesh.parameter.client.NodeParametersImpl;
 import com.gentics.mesh.parameter.impl.DeleteParametersImpl;
 import com.gentics.mesh.parameter.impl.VersioningParametersImpl;
 import com.gentics.mesh.rest.client.MeshBinaryResponse;
+import com.gentics.mesh.rest.client.MeshRestClientMessageException;
+import com.gentics.mesh.test.MeshCoreOptionChanger;
 import com.gentics.mesh.test.MeshTestSetting;
 import com.gentics.mesh.test.assertj.MeshCoreAssertion;
 import com.gentics.mesh.test.context.AbstractMeshTest;
 import com.gentics.mesh.util.VersionNumber;
+import com.google.common.net.HttpHeaders;
 
+import io.netty.handler.codec.http.HttpResponseStatus;
 import io.reactivex.Observable;
 import io.vertx.core.buffer.Buffer;
+import io.vertx.core.json.JsonObject;
 import io.vertx.test.core.TestUtils;
+import okhttp3.MediaType;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.RequestBody;
+import okhttp3.Response;
 
-@MeshTestSetting(testSize = FULL, startServer = true)
+@MeshTestSetting(testSize = FULL, startServer = true, optionChanger = MeshCoreOptionChanger.SHORT_BINARY_CHECK_INTERVAL)
 public class BinaryFieldUploadEndpointTest extends AbstractMeshTest {
+
+	@Rule
+	public final MockServerRule mockServer = new MockServerRule(this);
+
+	private MockServerClient mockServerClient;
 
 	@Test
 	public void testUploadWithNoPerm() throws IOException {
@@ -223,6 +251,9 @@ public class BinaryFieldUploadEndpointTest extends AbstractMeshTest {
 			assertNotNull(binaryField.getHeight());
 			assertEquals("image/jpeg", binaryField.getMimeType());
 		}
+		tx(tx -> {
+			new UploadsConsistencyCheck().invoke(mesh().database(), tx, true);
+		});
 	}
 
 	@Test
@@ -323,14 +354,14 @@ public class BinaryFieldUploadEndpointTest extends AbstractMeshTest {
 	}
 
 	@Test
-	public void testPlainTextExtractionForDocuments() throws IOException {
-		expectPlainText("test.pdf", "application/pdf", "Enemenemu");
-		expectPlainText("test.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-			"Das ist ein Word Dokument für den Johannes");
-		expectPlainText("small.mp4", "application/pdf", "HandBrake 0.9.4 2009112300");
-	}
+	public void testMetadataExtractionForDocuments() throws IOException {
+               expectMetadataOrPlainText("test.pdf", "application/pdf", Map.of("", "Enemenemu"));
+               expectMetadataOrPlainText("test.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                       Map.of("", "Das ist ein Word Dokument für den Johannes"));
+               expectMetadataOrPlainText("small.mp4", "video/mp4", Map.of("xmp_CreatorTool", "HandBrake 0.9.4 2009112300"));
+		        }
 
-	private void expectPlainText(String fileName, String mimeType, String plainText) throws IOException {
+	private void expectMetadataOrPlainText(String fileName, String mimeType, Map<String, String> metadata) throws IOException {
 		String parentNodeUuid = tx(() -> project().getBaseNode().getUuid());
 
 		Buffer buffer = getBuffer("/testfiles/" + fileName);
@@ -339,6 +370,7 @@ public class BinaryFieldUploadEndpointTest extends AbstractMeshTest {
 			() -> client().updateNodeBinaryField(PROJECT_NAME, node.getUuid(), "en", "0.1", "binary", new ByteArrayInputStream(buffer.getBytes()),
 				buffer.length(), fileName, mimeType));
 		BinaryField binaryField = node2.getFields().getBinaryField("binary");
+		String plainText = metadata.get("");
 		assertEquals("The plain text of file {" + fileName + "} did not match", plainText, binaryField.getPlainText());
 	}
 
@@ -358,7 +390,7 @@ public class BinaryFieldUploadEndpointTest extends AbstractMeshTest {
 	/**
 	 * Test whether the implementation works as expected when you update the node binary data to an image and back to a non image. The image related fields
 	 * should disappear.
-	 * 
+	 *
 	 * @throws IOException
 	 */
 	@Test
@@ -443,15 +475,23 @@ public class BinaryFieldUploadEndpointTest extends AbstractMeshTest {
 	}
 
 	@Test
-	public void testUpload() throws Exception {
+	public void testUploadWithoutCheck() throws Exception {
+		doTestUpload(false);
+	}
 
+	@Test
+	public void testUploadWithCheck() throws Exception {
+		doTestUpload(true);
+	}
+
+	private void doTestUpload(boolean useBinaryCheck) throws Exception {
 		String contentType = "application/blub";
 		int binaryLen = 8000;
 		String fileName = "somefile.dat";
 		HibNode node = folder("news");
 		String uuid = tx(() -> node.getUuid());
 		try (Tx tx = tx()) {
-			prepareSchema(node, "", "binary");
+			prepareSchema(node, "", "binary", useBinaryCheck ? "http://fake.check/url" : null);
 			tx.success();
 		}
 		MeshCoreAssertion.assertThat(testContext).hasUploads(0, 0).hasTempFiles(0).hasTempUploads(0);
@@ -469,15 +509,25 @@ public class BinaryFieldUploadEndpointTest extends AbstractMeshTest {
 		assertNull("The data did contain image information.", binaryField.getWidth());
 		assertNull("The data did contain image information.", binaryField.getHeight());
 
-		MeshBinaryResponse downloadResponse = call(() -> client().downloadBinaryField(PROJECT_NAME, uuid, "en", "binary"));
-		assertNotNull(downloadResponse);
-		byte[] bytes = IOUtils.toByteArray(downloadResponse.getStream());
-		downloadResponse.close();
-		assertNotNull(bytes[0]);
-		assertNotNull(bytes[binaryLen - 1]);
-		assertEquals(binaryLen, bytes.length);
-		assertEquals(contentType, downloadResponse.getContentType());
-		assertEquals(fileName, downloadResponse.getFilename());
+		if (useBinaryCheck) {
+			assertEquals("The binary must be postponed initially", BinaryCheckStatus.POSTPONED, binaryField.getCheckStatus());
+		} else {
+			assertEquals("The binary must be accepted immediately", BinaryCheckStatus.ACCEPTED, binaryField.getCheckStatus());
+
+			MeshBinaryResponse downloadResponse = call(() -> client().downloadBinaryField(PROJECT_NAME, uuid, "en", "binary"));
+
+			assertNotNull(downloadResponse);
+
+			byte[] bytes = IOUtils.toByteArray(downloadResponse.getStream());
+
+			downloadResponse.close();
+			assertNotNull(bytes[0]);
+			assertNotNull(bytes[binaryLen - 1]);
+			assertEquals(binaryLen, bytes.length);
+			assertEquals(contentType, downloadResponse.getContentType());
+			assertEquals(fileName, downloadResponse.getFilename());
+		}
+
 
 		try (Tx tx = tx()) {
 			ContentDao contentDao = tx.contentDao();
@@ -491,9 +541,58 @@ public class BinaryFieldUploadEndpointTest extends AbstractMeshTest {
 
 	}
 
+	@Test
+	public void testRepairUpload() throws Exception {
+		String contentType = "application/blub";
+		int binaryLen = 8000;
+		String fileName = "somefile.dat";
+		HibNode node = folder("news");
+		String uuid = tx(() -> node.getUuid());
+		Buffer data = TestUtils.randomBuffer(binaryLen);
+		try (Tx tx = tx()) {
+			prepareSchema(node, "", "binary");
+			tx.success();
+		}
+		MeshCoreAssertion.assertThat(testContext).hasUploads(0, 0).hasTempFiles(0).hasTempUploads(0);
+		call(() -> uploadData(data, node, "en", "binary", contentType, fileName));
+		MeshCoreAssertion.assertThat(testContext).hasUploads(1, 1).hasTempFiles(0).hasTempUploads(0);
+
+		MeshBinaryResponse downloadResponse = call(() -> client().downloadBinaryField(PROJECT_NAME, uuid, "en", "binary"));
+		assertNotNull(downloadResponse);
+		byte[] bytes = IOUtils.toByteArray(downloadResponse.getStream());
+		downloadResponse.close();
+		assertNotNull(bytes[0]);
+		assertNotNull(bytes[binaryLen - 1]);
+		assertEquals(binaryLen, bytes.length);
+		assertEquals(contentType, downloadResponse.getContentType());
+		assertEquals(fileName, downloadResponse.getFilename());
+
+		// delete file from file system
+		String dir = options().getUploadOptions().getDirectory();
+		Files.walk(Paths.get(dir))
+				.filter(Files::isRegularFile)
+				.findFirst().ifPresent(p -> {
+					try {
+						Files.delete(p);
+					} catch (IOException e) {
+						throw new RuntimeException(e);
+					}
+				});
+
+		// assert download fails
+		call(() -> client().downloadBinaryField(PROJECT_NAME, uuid, "en", "binary"), HttpResponseStatus.INTERNAL_SERVER_ERROR);
+
+		// re-upload file
+		call(() -> uploadData(data, node, "en", "binary", contentType, fileName));
+		MeshCoreAssertion.assertThat(testContext).hasUploads(1, 1).hasTempFiles(0).hasTempUploads(0);
+
+		// download now works
+		call(() -> client().downloadBinaryField(PROJECT_NAME, uuid, "en", "binary"));
+	}
+
 	/**
 	 * Assert that deleting a binary node will also remove the stored binary file.
-	 * 
+	 *
 	 * @throws IOException
 	 */
 	@Test
@@ -565,9 +664,9 @@ public class BinaryFieldUploadEndpointTest extends AbstractMeshTest {
 
 	/**
 	 * Assert that deleting one node will not affect the binary of another node which uses the same binary (binary of the binaryfield).
-	 * 
+	 *
 	 * @throws IOException
-	 * @throws InterruptedException 
+	 * @throws InterruptedException
 	 */
 	@Test
 	public void testDeleteBinaryNodeDeduplication() throws IOException, InterruptedException {
@@ -731,21 +830,166 @@ public class BinaryFieldUploadEndpointTest extends AbstractMeshTest {
 	}
 
 	@Test
-	public void testFlowableDownload() throws IOException {
+	public void testFlowableDownloadWithoutCheckService() throws IOException {
+		doTestFlowableDownload(false);
+	}
+
+	@Test
+	public void testFlowableDownloadWithCheckServiceAccepted() throws IOException, InterruptedException {
+		CountDownLatch checkRequestLatch = new CountDownLatch(1);
+		AtomicBoolean success = prepareCheckServiceMock(true, checkRequestLatch);
+		BinaryDownloadInfo downloadInfo = doTestFlowableDownload(true);
+
+		assertThat(checkRequestLatch.await(30, TimeUnit.SECONDS)).as("Check request was performed within timeout").isTrue();
+
+		mockServerClient.verify(HttpRequest.request("/check"), VerificationTimes.atLeast(1));
+
+		// The assertions in the MockServer callbacks will not cause the test to fail. The atomic boolean is used
+		// to check if every assertion during the binary check process succeeded.
+		assertThat(success.get())
+			.as("Check service success")
+			.isTrue();
+
+		MeshBinaryResponse downloadResponse = client().downloadBinaryField(PROJECT_NAME, downloadInfo.nodeUuid, "en", "image").blockingGet();
+
+		assertNotNull(downloadResponse);
+
+		byte[] bytes = downloadResponse.getFlowable().reduce(ArrayUtils::addAll).blockingGet();
+
+		assertEquals(downloadInfo.size, bytes.length);
+		assertNotNull("The first byte of the response could not be loaded.", bytes[0]);
+		assertNotNull("The last byte of the response could not be loaded.", bytes[downloadInfo.size - 1]);
+		assertEquals(downloadInfo.contentType, downloadResponse.getContentType());
+		assertEquals(downloadInfo.filename, downloadResponse.getFilename());
+	}
+
+	@Test(expected = RuntimeException.class)
+	public void testFlowableDownloadWithCheckServiceDenied() throws IOException, InterruptedException {
+		CountDownLatch checkRequestLatch = new CountDownLatch(1);
+		AtomicBoolean success = prepareCheckServiceMock(false, checkRequestLatch);
+		BinaryDownloadInfo downloadInfo = doTestFlowableDownload(true);
+
+		assertThat(checkRequestLatch.await(30, TimeUnit.SECONDS)).as("Check request was performend within timeout").isTrue();
+
+		mockServerClient.verify(HttpRequest.request("/check"), VerificationTimes.atLeast(1));
+
+		// The assertions in the MockServer callbacks will not cause the test to fail. The atomic boolean is used
+		// to check if every assertion during the binary check process succeeded.
+		assertThat(success.get())
+			.as("Check service success")
+			.isTrue();
+
+		client().downloadBinaryField(PROJECT_NAME, downloadInfo.nodeUuid, "en", "image").blockingGet();
+
+		fail("Download of denied binary must not succeed");
+	}
+
+	private AtomicBoolean prepareCheckServiceMock(boolean shouldSucceed, CountDownLatch checkRequestLatch) {
+		AtomicBoolean result = new AtomicBoolean(false);
+		String authHeader = String.format("Bearer %s", client().getAPIKey());
+
+		mockServerClient
+			.when(HttpRequest.request("/check").withMethod("POST"))
+			.respond(rq -> {
+				JsonObject body = new JsonObject(rq.getBodyAsString());
+				OkHttpClient client = new OkHttpClient.Builder().build();
+				String downloadUrl = body.getString("downloadUrl");
+				Request request = new Request.Builder()
+					.url(downloadUrl)
+					.header(HttpHeaders.AUTHORIZATION, authHeader)
+					.get()
+					.build();
+				Response response = client.newCall(request).execute();
+
+				// Check that the file download works.
+				assertThat(response.isSuccessful())
+					.as("Check service file download successful")
+					.isTrue();
+				assertThat(response.header(HttpHeaders.CONTENT_TYPE, ""))
+					.as("Check service file download content type")
+					.isEqualTo("image/png");
+				assertThat(Integer.parseInt(response.header(HttpHeaders.CONTENT_LENGTH, "0")))
+					.as("Check service file download size")
+					.isGreaterThan(0);
+
+				// Send request to the callback endpoint.
+				JsonObject checkResult = new JsonObject().put("status", shouldSucceed ? "ACCEPTED" : "DENIED");
+
+				request = new Request.Builder()
+					.url(body.getString("callbackUrl"))
+					.post(RequestBody.create(MediaType.parse("application/json"), checkResult.encode()))
+					.header(HttpHeaders.AUTHORIZATION, authHeader)
+					.build();
+				response = client.newCall(request).execute();
+
+				assertThat(response.isSuccessful())
+					.as("Check callback request is successful")
+					.isTrue();
+
+				result.set(true);
+				checkRequestLatch.countDown();
+
+				return HttpResponse.response().withStatusCode(HttpResponseStatus.OK.code());
+			});
+
+		return result;
+	}
+
+	/**
+	 * Perform the actual download test.
+	 *
+	 * <p>
+	 *     When {@code useCheckService} is {@code true}, the respective property in the binary field is set
+	 *     and the download is expected to fail.
+	 * </p>
+	 *
+	 * @param useCheckService Whether to set the check service URL for the test.
+	 * @return The created nodes UUID.
+	 */
+	public BinaryDownloadInfo doTestFlowableDownload(boolean useCheckService) throws IOException {
 		String contentType = "image/png";
 		String fieldName = "image";
 		String fileName = "somefile.png";
 		HibNode node = folder("news");
 
 		try (Tx tx = tx()) {
-			prepareSchema(node, "", fieldName);
+			prepareSchema(node, "", fieldName, useCheckService ? "http://localhost:" + mockServer.getPort() + "/check" : null);
 			tx.success();
 		}
 
 		try (Tx tx = tx()) {
 			int size = uploadImage(node, "en", fieldName, fileName, contentType);
 
-			MeshBinaryResponse downloadResponse = call(() -> client().downloadBinaryField(PROJECT_NAME, node.getUuid(), "en", fieldName));
+			MeshBinaryResponse downloadResponse = null;
+
+			try {
+				downloadResponse = client().downloadBinaryField(PROJECT_NAME, node.getUuid(), "en", fieldName).blockingGet();
+				if (useCheckService) {
+					fail("Download must not succeed when check service URL is given");
+				}
+			} catch (Exception e) {
+				assertThat(e.getCause())
+					.as("Download exception")
+					.matches(
+						cause -> {
+							if (!(cause instanceof MeshRestClientMessageException)) {
+								return false;
+							}
+
+							MeshRestClientMessageException restClientException = (MeshRestClientMessageException) cause;
+
+							return restClientException.getStatusCode() == HttpResponseStatus.NOT_FOUND.code()
+								&& restClientException.getMessage().contains("was not accepted yet");
+						},
+						"must be 404 because binary was not accepted yet");
+			}
+
+			if (useCheckService) {
+				// Nothing more to check, when this line is reached the download failed as expected.
+
+				return new BinaryDownloadInfo(node.getUuid(), fileName, contentType, size);
+			}
+
 			assertNotNull(downloadResponse);
 			byte[] bytes = downloadResponse.getFlowable().reduce(ArrayUtils::addAll).blockingGet();
 			assertEquals(size, bytes.length);
@@ -753,7 +997,25 @@ public class BinaryFieldUploadEndpointTest extends AbstractMeshTest {
 			assertNotNull("The last byte of the response could not be loaded.", bytes[size - 1]);
 			assertEquals(contentType, downloadResponse.getContentType());
 			assertEquals(fileName, downloadResponse.getFilename());
+
+			return new BinaryDownloadInfo(node.getUuid(), fileName, contentType, size);
 		}
 	}
 
+	/**
+	 * Wrapper for binary download information needed for tests.
+	 */
+	private static class BinaryDownloadInfo {
+		public final String nodeUuid;
+		public final String filename;
+		public final String contentType;
+		public final int size;
+
+		public BinaryDownloadInfo(String nodeUuid, String filename, String contentType, int size) {
+			this.nodeUuid = nodeUuid;
+			this.filename = filename;
+			this.contentType = contentType;
+			this.size = size;
+		}
+	}
 }

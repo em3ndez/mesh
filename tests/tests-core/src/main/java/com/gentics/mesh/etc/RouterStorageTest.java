@@ -30,7 +30,7 @@ public class RouterStorageTest implements MeshOptionsTypeUnawareContext {
 		RouterStorageRegistryImpl routerStorageRegistry = mock(RouterStorageRegistryImpl.class);
 		RouterStorageImpl storage = new RouterStorageImpl(Vertx.vertx(), getOptions(), chain, null, null, null, () -> {
 			return Mockito.mock(Database.class);
-		}, null, routerStorageRegistry, null, null, null);
+		}, null, routerStorageRegistry, null, null);
 
 		RoutingContext rc = mock(RoutingContextImplBase.class);
 		Route currentRoute = mock(RouteImpl.class);
@@ -43,7 +43,7 @@ public class RouterStorageTest implements MeshOptionsTypeUnawareContext {
 		when(request.method()).thenReturn(HttpMethod.GET);
 		when(request.uri()).thenReturn("");
 		when(rc.request()).thenReturn(request);
-		when(rc.normalisedPath()).thenReturn("/blub");
+		when(rc.normalizedPath()).thenReturn("/blub");
 		when(rc.queryParams()).thenReturn(MultiMap.caseInsensitiveMultiMap());
 		storage.root().getRouter().handleFailure(rc);
 	}

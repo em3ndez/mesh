@@ -22,28 +22,31 @@ import static io.vertx.core.http.HttpMethod.POST;
 
 import javax.inject.Inject;
 
-import com.gentics.mesh.auth.MeshAuthChainImpl;
+import com.gentics.mesh.auth.MeshAuthChain;
 import com.gentics.mesh.context.InternalActionContext;
+import com.gentics.mesh.core.db.Database;
+import com.gentics.mesh.core.endpoint.RolePermissionHandlingEndpoint;
+import com.gentics.mesh.core.endpoint.admin.LocalConfigApi;
+import com.gentics.mesh.etc.config.MeshOptions;
 import com.gentics.mesh.parameter.impl.GenericParametersImpl;
 import com.gentics.mesh.parameter.impl.PagingParametersImpl;
 import com.gentics.mesh.parameter.impl.RolePermissionParametersImpl;
 import com.gentics.mesh.rest.InternalEndpointRoute;
-import com.gentics.mesh.router.route.AbstractInternalEndpoint;
 
 /**
- * Endpoint defintion for /api/v1/groups
+ * Endpoint definition for /api/v1/groups
  */
-public class GroupEndpoint extends AbstractInternalEndpoint {
+public class GroupEndpoint extends RolePermissionHandlingEndpoint {
 
 	private GroupCrudHandler crudHandler;
 
 	public GroupEndpoint() {
-		super("groups", null);
+		super("groups", null, null, null, null);
 	}
 
 	@Inject
-	public GroupEndpoint(MeshAuthChainImpl chain, GroupCrudHandler crudHandler) {
-		super("groups", chain);
+	public GroupEndpoint(MeshAuthChain chain, GroupCrudHandler crudHandler, LocalConfigApi localConfigApi, Database db, MeshOptions options) {
+		super("groups", chain, localConfigApi, db, options);
 		this.crudHandler = crudHandler;
 	}
 
@@ -63,6 +66,7 @@ public class GroupEndpoint extends AbstractInternalEndpoint {
 		addReadHandler();
 		addUpdateHandler();
 		addDeleteHandler();
+		addRolePermissionHandler("groupUuid", GROUP_CLIENT_UUID, "group", crudHandler, false);
 	}
 
 	private void addGroupRoleHandlers() {
@@ -95,7 +99,7 @@ public class GroupEndpoint extends AbstractInternalEndpoint {
 			String groupUuid = ac.getParameter("groupUuid");
 			String roleUuid = ac.getParameter("roleUuid");
 			crudHandler.handleAddRoleToGroup(ac, groupUuid, roleUuid);
-		});
+		}, isOrderedBlockingHandlers());
 
 		InternalEndpointRoute removeRole = createRoute();
 		removeRole.path("/:groupUuid/roles/:roleUuid");
@@ -111,7 +115,7 @@ public class GroupEndpoint extends AbstractInternalEndpoint {
 			String groupUuid = ac.getParameter("groupUuid");
 			String roleUuid = ac.getParameter("roleUuid");
 			crudHandler.handleRemoveRoleFromGroup(ac, groupUuid, roleUuid);
-		});
+		}, isOrderedBlockingHandlers());
 	}
 
 	private void addGroupUserHandlers() {
@@ -143,7 +147,7 @@ public class GroupEndpoint extends AbstractInternalEndpoint {
 			String groupUuid = ac.getParameter("groupUuid");
 			String userUuid = ac.getParameter("userUuid");
 			crudHandler.handleAddUserToGroup(ac, groupUuid, userUuid);
-		});
+		}, isOrderedBlockingHandlers());
 
 		InternalEndpointRoute removeUser = createRoute();
 		removeUser.path("/:groupUuid/users/:userUuid").method(DELETE).produces(APPLICATION_JSON);
@@ -157,7 +161,7 @@ public class GroupEndpoint extends AbstractInternalEndpoint {
 			String groupUuid = ac.getParameter("groupUuid");
 			String userUuid = ac.getParameter("userUuid");
 			crudHandler.handleRemoveUserFromGroup(ac, groupUuid, userUuid);
-		});
+		}, isOrderedBlockingHandlers());
 	}
 
 	private void addDeleteHandler() {
@@ -173,7 +177,7 @@ public class GroupEndpoint extends AbstractInternalEndpoint {
 			InternalActionContext ac = wrap(rc);
 			String uuid = ac.getParameter("groupUuid");
 			crudHandler.handleDelete(ac, uuid);
-		});
+		}, isOrderedBlockingHandlers());
 	}
 
 	// TODO Determine what we should do about conflicting group names. Should we let neo4j handle those cases?
@@ -187,14 +191,13 @@ public class GroupEndpoint extends AbstractInternalEndpoint {
 		endpoint.consumes(APPLICATION_JSON);
 		endpoint.produces(APPLICATION_JSON);
 		endpoint.exampleRequest(groupExamples.getGroupUpdateRequest("New group name"));
-		endpoint.exampleResponse(OK, groupExamples.getGroupResponse1("New group name"), "Updated group.");
-		endpoint.events(GROUP_UPDATED);
+		endpoint.exampleResponse(OK, groupExamples.getGroupResponse1("New group name"), "Updated or new group.");
+		endpoint.events(GROUP_CREATED, GROUP_UPDATED);
 		endpoint.blockingHandler(rc -> {
 			InternalActionContext ac = wrap(rc);
 			String uuid = ac.getParameter("groupUuid");
 			crudHandler.handleUpdate(ac, uuid);
-		});
-
+		}, isOrderedBlockingHandlers());
 	}
 
 	private void addReadHandler() {
@@ -241,7 +244,7 @@ public class GroupEndpoint extends AbstractInternalEndpoint {
 		endpoint.events(GROUP_CREATED);
 		endpoint.blockingHandler(rc -> {
 			crudHandler.handleCreate(wrap(rc));
-		});
+		}, isOrderedBlockingHandlers());
 
 	}
 }

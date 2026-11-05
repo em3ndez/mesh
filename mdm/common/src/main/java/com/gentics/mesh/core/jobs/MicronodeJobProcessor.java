@@ -15,10 +15,12 @@ import com.gentics.mesh.context.MicronodeMigrationContext;
 import com.gentics.mesh.context.impl.MicronodeMigrationContextImpl;
 import com.gentics.mesh.core.data.branch.HibBranch;
 import com.gentics.mesh.core.data.branch.HibBranchMicroschemaVersion;
+import com.gentics.mesh.core.data.branch.HibBranchSchemaVersion;
 import com.gentics.mesh.core.data.job.HibJob;
 import com.gentics.mesh.core.data.project.HibProject;
 import com.gentics.mesh.core.data.schema.HibMicroschema;
 import com.gentics.mesh.core.data.schema.HibMicroschemaVersion;
+import com.gentics.mesh.core.data.schema.HibSchemaVersion;
 import com.gentics.mesh.core.db.CommonTx;
 import com.gentics.mesh.core.db.Database;
 import com.gentics.mesh.core.db.Tx;
@@ -29,10 +31,10 @@ import com.gentics.mesh.core.rest.MeshEvent;
 import com.gentics.mesh.core.rest.event.migration.MicroschemaMigrationMeshEventModel;
 import com.gentics.mesh.core.rest.event.node.MicroschemaMigrationCause;
 import com.gentics.mesh.core.rest.job.JobStatus;
-import com.gentics.mesh.core.rest.job.JobWarningList;
+
 import io.reactivex.Completable;
-import io.vertx.core.logging.Logger;
-import io.vertx.core.logging.LoggerFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * This class is responsible for starting a micronode migration from a job
@@ -84,7 +86,7 @@ public class MicronodeJobProcessor implements SingleJobProcessor {
 				MicronodeMigrationContextImpl context = new MicronodeMigrationContextImpl();
 				context.setStatus(status);
 
-				tx.createBatch().add(createEvent(job, tx, MICROSCHEMA_MIGRATION_START, STARTING)).dispatch();
+				tx.batch().add(createEvent(job, tx, MICROSCHEMA_MIGRATION_START, STARTING)).dispatch();
 
 				HibBranch branch = job.getBranch();
 				if (branch == null) {
@@ -148,15 +150,28 @@ public class MicronodeJobProcessor implements SingleJobProcessor {
 					}).doOnError(err -> {
 						db.tx(tx -> {
 							context.getStatus().error(err, "Error in micronode migration.");
-							tx.createBatch().add(createEvent(job, tx, BRANCH_MIGRATION_FINISHED, FAILED)).dispatch();
+							tx.batch().add(createEvent(job, tx, BRANCH_MIGRATION_FINISHED, FAILED)).dispatch();
 						});
 					});
 		});
 	}
 
 	private void finalizeMigration(HibJob job, MicronodeMigrationContext context) {
+		// Deactivate edge
+		db.tx(() -> {
+			HibBranch branch = context.getBranch();
+			HibMicroschemaVersion fromContainerVersion = context.getFromVersion();
+			HibBranchMicroschemaVersion assignment =  Tx.get().branchDao().findBranchMicroschemaEdge(branch, fromContainerVersion);
+			if (assignment != null) {
+				assignment.setActive(false);
+			}
+			if (log.isDebugEnabled()) {
+				log.debug("Deactivated microschema version {}-{} for branch {}",
+						fromContainerVersion.getSchema().getName(), fromContainerVersion.getVersion(), branch.getName());
+			}
+		});
 		db.tx(tx -> {
-			tx.createBatch().add(createEvent(job, tx, MICROSCHEMA_MIGRATION_FINISHED, COMPLETED)).dispatch();
+			tx.batch().add(createEvent(job, tx, MICROSCHEMA_MIGRATION_FINISHED, COMPLETED)).dispatch();
 		});
 	}
 }

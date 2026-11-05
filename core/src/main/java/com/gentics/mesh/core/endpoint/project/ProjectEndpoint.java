@@ -18,29 +18,32 @@ import javax.inject.Inject;
 
 import org.apache.commons.lang3.StringUtils;
 
-import com.gentics.mesh.auth.MeshAuthChainImpl;
+import com.gentics.mesh.auth.MeshAuthChain;
 import com.gentics.mesh.context.InternalActionContext;
+import com.gentics.mesh.core.db.Database;
+import com.gentics.mesh.core.endpoint.RolePermissionHandlingEndpoint;
+import com.gentics.mesh.core.endpoint.admin.LocalConfigApi;
+import com.gentics.mesh.etc.config.MeshOptions;
 import com.gentics.mesh.parameter.impl.PagingParametersImpl;
 import com.gentics.mesh.parameter.impl.ProjectPurgeParametersImpl;
 import com.gentics.mesh.parameter.impl.RolePermissionParametersImpl;
 import com.gentics.mesh.rest.InternalEndpointRoute;
-import com.gentics.mesh.router.route.AbstractInternalEndpoint;
 
 /**
  * Endpoint for /api/v1/projects
  */
-public class ProjectEndpoint extends AbstractInternalEndpoint {
+public class ProjectEndpoint extends RolePermissionHandlingEndpoint {
 
 	private ProjectCrudHandler crudHandler;
 
 	@Inject
-	public ProjectEndpoint(MeshAuthChainImpl chain, ProjectCrudHandler crudHandler) {
-		super("projects", chain);
+	public ProjectEndpoint(MeshAuthChain chain, ProjectCrudHandler crudHandler, LocalConfigApi localConfigApi, Database db, MeshOptions options) {
+		super("projects", chain, localConfigApi, db, options);
 		this.crudHandler = crudHandler;
 	}
 
 	public ProjectEndpoint() {
-		super("projects", null);
+		super("projects", null, null, null, null);
 	}
 
 	@Override
@@ -59,6 +62,8 @@ public class ProjectEndpoint extends AbstractInternalEndpoint {
 
 		// Version purge
 		addVersionPurgeHandler();
+
+		addRolePermissionHandler("projectUuid", PROJECT_DEMO_UUID, "project", crudHandler, false);
 	}
 
 	private void addUpdateHandler() {
@@ -77,7 +82,7 @@ public class ProjectEndpoint extends AbstractInternalEndpoint {
 			InternalActionContext ac = wrap(rc);
 			String uuid = ac.getParameter("projectUuid");
 			crudHandler.handleUpdate(ac, uuid);
-		});
+		}, isOrderedBlockingHandlers());
 	}
 
 	// TODO when the root tag is not saved the project can't be saved. Unfortunately this did not show up as an http error. We must handle those
@@ -95,7 +100,7 @@ public class ProjectEndpoint extends AbstractInternalEndpoint {
 		endpoint.blockingHandler(rc -> {
 			InternalActionContext ac = wrap(rc);
 			crudHandler.handleCreate(ac);
-		});
+		}, isOrderedBlockingHandlers());
 	}
 
 	private void addReadHandler() {
@@ -144,7 +149,7 @@ public class ProjectEndpoint extends AbstractInternalEndpoint {
 			InternalActionContext ac = wrap(rc);
 			String uuid = ac.getParameter("projectUuid");
 			crudHandler.handleDelete(ac, uuid);
-		});
+		}, isOrderedBlockingHandlers());
 	}
 
 	private void addVersionPurgeHandler() {

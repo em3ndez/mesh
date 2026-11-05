@@ -5,15 +5,21 @@ import javax.inject.Provider;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
 import com.gentics.mesh.annotation.Getter;
+import com.gentics.mesh.cache.GroupNameCache;
 import com.gentics.mesh.cache.PermissionCache;
 import com.gentics.mesh.cache.ProjectBranchNameCache;
 import com.gentics.mesh.cache.ProjectNameCache;
+import com.gentics.mesh.cache.RoleNameCache;
+import com.gentics.mesh.cache.TagFamilyNameCache;
+import com.gentics.mesh.cache.TagNameCache;
+import com.gentics.mesh.cache.UserNameCache;
 import com.gentics.mesh.cache.WebrootPathCache;
 import com.gentics.mesh.context.BulkActionContext;
 import com.gentics.mesh.core.data.generic.UserProperties;
 import com.gentics.mesh.core.data.page.PageTransformer;
 import com.gentics.mesh.core.data.schema.handler.MicroschemaComparator;
 import com.gentics.mesh.core.data.schema.handler.SchemaComparator;
+import com.gentics.mesh.core.data.search.Compliance;
 import com.gentics.mesh.core.data.service.ServerSchemaStorage;
 import com.gentics.mesh.core.data.storage.BinaryStorage;
 import com.gentics.mesh.core.data.storage.LocalBinaryStorage;
@@ -92,6 +98,21 @@ public interface BaseMeshComponent {
 	ProjectNameCache projectNameCache();
 
 	@Getter
+	UserNameCache userNameCache();
+
+	@Getter
+	TagFamilyNameCache tagFamilyNameCache();
+
+	@Getter
+	TagNameCache tagNameCache();
+
+	@Getter
+	RoleNameCache roleNameCache();
+
+	@Getter
+	GroupNameCache groupNameCache();
+
+	@Getter
 	PageTransformer pageTransformer();
 
 	// Plugin
@@ -135,6 +156,9 @@ public interface BaseMeshComponent {
 	// Search
 	@Getter
 	SearchProvider searchProvider();
+
+	@Getter
+	Compliance compliance();
 
 	@Getter
 	UserIndexHandler userIndexHandler();

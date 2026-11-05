@@ -52,6 +52,7 @@ import com.gentics.mesh.core.data.dao.BranchDao;
 import com.gentics.mesh.core.data.dao.RoleDao;
 import com.gentics.mesh.core.data.project.HibProject;
 import com.gentics.mesh.core.db.Tx;
+import com.gentics.mesh.core.rest.SortOrder;
 import com.gentics.mesh.core.rest.branch.BranchCreateRequest;
 import com.gentics.mesh.core.rest.branch.BranchListResponse;
 import com.gentics.mesh.core.rest.branch.BranchReference;
@@ -62,7 +63,6 @@ import com.gentics.mesh.core.rest.branch.info.BranchInfoSchemaList;
 import com.gentics.mesh.core.rest.branch.info.BranchMicroschemaInfo;
 import com.gentics.mesh.core.rest.branch.info.BranchSchemaInfo;
 import com.gentics.mesh.core.rest.common.ListResponse;
-import com.gentics.mesh.core.rest.error.GenericRestException;
 import com.gentics.mesh.core.rest.event.branch.BranchMicroschemaAssignModel;
 import com.gentics.mesh.core.rest.event.branch.BranchSchemaAssignEventModel;
 import com.gentics.mesh.core.rest.event.impl.MeshElementEventModelImpl;
@@ -91,7 +91,9 @@ import com.gentics.mesh.parameter.client.NodeParametersImpl;
 import com.gentics.mesh.parameter.client.PagingParametersImpl;
 import com.gentics.mesh.parameter.impl.RolePermissionParametersImpl;
 import com.gentics.mesh.parameter.impl.SchemaUpdateParametersImpl;
+import com.gentics.mesh.parameter.impl.SortingParametersImpl;
 import com.gentics.mesh.parameter.impl.VersioningParametersImpl;
+import com.gentics.mesh.rest.client.MeshRestClientMessageException;
 import com.gentics.mesh.test.MeshTestSetting;
 import com.gentics.mesh.test.context.AbstractMeshTest;
 import com.gentics.mesh.test.definition.BasicRestTestcases;
@@ -544,7 +546,8 @@ public class BranchEndpointTest extends AbstractMeshTest implements BasicRestTes
 
 	@Test
 	public void testReadByBogusUUID() throws Exception {
-		call(() -> client().findBranchByUuid(PROJECT_NAME, "bogus"), NOT_FOUND, "object_not_found_for_uuid", "bogus");
+		String bogusUuid = UUIDUtil.randomUUID();
+		call(() -> client().findBranchByUuid(PROJECT_NAME, bogusUuid), NOT_FOUND, "object_not_found_for_uuid", bogusUuid);
 	}
 
 	@Test
@@ -600,6 +603,40 @@ public class BranchEndpointTest extends AbstractMeshTest implements BasicRestTes
 			assertThat(responseList.getData()).usingElementComparatorOnFields("uuid", "name").containsOnly(initial,
 				first, second, third);
 		}
+
+		verifySorting(param -> call(() -> client().findBranches(PROJECT_NAME, param)), BranchResponse::getName, "name", "List of branch names");
+	}
+
+	@Test
+	@Override
+	public void testReadPermittedSorted() throws Exception {
+		for (int i = 0; i < 10; i++) {
+			final String name = "test12345_" + i;
+			boolean even = (i % 2) == 0;
+			waitForJobs(() -> {
+				BranchCreateRequest request = new BranchCreateRequest();
+				request.setName(name);
+				BranchResponse response = call(() -> client().createBranch(PROJECT_NAME, request));
+				if (even) {
+					tx(tx -> {
+						tx.roleDao().revokePermissions(role(), tx.branchDao().findByUuid(project(), response.getUuid()), READ_PERM);
+					});
+				}
+			}, COMPLETED, 1);
+		}
+		BranchListResponse list = call(() -> client().findBranches(PROJECT_NAME, new SortingParametersImpl("name", SortOrder.DESCENDING)));
+		assertEquals("Total data size should be 6", 6, list.getData().size());
+		assertThat(list.getData()).isSortedAccordingTo((fa, fb) -> getTestContext().getSortComparator().reversed().compare(
+				fa != null ? fa.getName() : null,
+				fb != null ? fb.getName() : null));
+	}
+
+
+	@Test
+	@Override
+	public void testReadPermittedSortedWrongField() throws Exception {
+		MeshRestClientMessageException error = call(() -> client().findBranches(PROJECT_NAME, new SortingParametersImpl("existiertleidernicht", SortOrder.DESCENDING)), BAD_REQUEST);
+		assertThat(error.getResponseMessage().getMessage()).as("Error message").startsWith("The following column names are not allowed for sorting: [existiertleidernicht].");
 	}
 
 	@Test
@@ -699,14 +736,6 @@ public class BranchEndpointTest extends AbstractMeshTest implements BasicRestTes
 		// request.setActive(false);
 		call(() -> client().updateBranch(PROJECT_NAME, initialBranchUuid(), request), FORBIDDEN, "error_missing_perm", initialBranchUuid(),
 			UPDATE_PERM.getRestPerm().getName());
-	}
-
-	@Test
-	@Override
-	public void testUpdateWithBogusUuid() throws GenericRestException, Exception {
-		BranchUpdateRequest request = new BranchUpdateRequest();
-		// request.setActive(false);
-		call(() -> client().updateBranch(PROJECT_NAME, "bogus", request), BAD_REQUEST, "error_illegal_uuid", "bogus");
 	}
 
 	@Test

@@ -1,0 +1,8 @@
+{
+    "name": "mesh-models",
+    "$schema": "../../node_modules/nx/schemas/project-schema.json",
+    "sourceRoot": "packages/mesh-models/src",
+    "projectType": "library",
+    "tags": ["lib", "models"],
+    "targets": {}
+}

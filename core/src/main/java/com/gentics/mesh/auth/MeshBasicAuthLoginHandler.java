@@ -1,21 +1,29 @@
 package com.gentics.mesh.auth;
 
-import com.gentics.mesh.auth.provider.MeshJWTAuthProvider;
-import com.gentics.mesh.context.InternalActionContext;
-import com.gentics.mesh.context.impl.InternalRoutingActionContextImpl;
-import io.vertx.core.AsyncResult;
-import io.vertx.core.Handler;
-import io.vertx.core.http.HttpHeaders;
-import io.vertx.core.http.HttpServerRequest;
-import io.vertx.core.json.JsonObject;
-import io.vertx.ext.auth.User;
-import io.vertx.ext.web.RoutingContext;
-import io.vertx.ext.web.handler.AuthHandler;
-import io.vertx.ext.web.handler.impl.AuthHandlerImpl;
+import java.util.Base64;
 
 import javax.inject.Inject;
 import javax.inject.Singleton;
-import java.util.Base64;
+
+import org.apache.commons.lang3.NotImplementedException;
+
+import com.gentics.mesh.auth.provider.MeshJWTAuthProvider;
+import com.gentics.mesh.context.InternalActionContext;
+import com.gentics.mesh.context.impl.InternalRoutingActionContextImpl;
+import com.gentics.mesh.core.rest.auth.TokenResponse;
+import com.gentics.mesh.etc.config.MeshOptions;
+import com.gentics.mesh.shared.SharedKeys;
+
+import io.vertx.core.Future;
+import io.vertx.core.http.Cookie;
+import io.vertx.core.http.HttpHeaders;
+import io.vertx.core.http.HttpServerRequest;
+import io.vertx.ext.auth.User;
+import io.vertx.ext.auth.authentication.Credentials;
+import io.vertx.ext.auth.authentication.TokenCredentials;
+import io.vertx.ext.web.RoutingContext;
+import io.vertx.ext.web.handler.impl.AuthenticationHandlerImpl;
+import io.vertx.ext.web.impl.UserContextInternal;
 
 /**
  * Extended Vert.x {@link AuthHandler}.
@@ -23,33 +31,30 @@ import java.util.Base64;
  * The {@link #handle(RoutingContext)} method is overriden in order to support the {@link MeshJWTAuthProvider}.
  */
 @Singleton
-public class MeshBasicAuthLoginHandler extends AuthHandlerImpl {
+public class MeshBasicAuthLoginHandler extends AuthenticationHandlerImpl<MeshJWTAuthProvider> {
 
 	final String realm;
 
 	private MeshJWTAuthProvider authProvider;
 
+	private final MeshOptions meshOptions;
+
 	@Inject
-	public MeshBasicAuthLoginHandler(MeshJWTAuthProvider authProvider) {
+	public MeshBasicAuthLoginHandler(MeshJWTAuthProvider authProvider, MeshOptions meshOptions) {
 		super(authProvider);
 		this.authProvider = authProvider;
+		this.meshOptions = meshOptions;
 		this.realm = "Gentics Mesh";
 	}
 
 	private void authorizeUser(RoutingContext ctx, User user) {
-		authorize(user, authZ -> {
-			if (authZ.failed()) {
-				ctx.fail(authZ.cause());
-				return;
-			}
-			// success, allowed to continue
-			ctx.next();
-		});
+		// authorization is done with roles
+		ctx.next();
 	}
 
 	@Override
-	public void parseCredentials(RoutingContext context, Handler<AsyncResult<JsonObject>> handler) {
-		// Not needed
+	public Future<User> authenticate(RoutingContext context) {
+		throw new NotImplementedException();
 	}
 
 	@Override
@@ -72,14 +77,46 @@ public class MeshBasicAuthLoginHandler extends AuthHandlerImpl {
 				try {
 					String[] parts = authorization.split(" ");
 					sscheme = parts[0];
-					String decoded = new String(Base64.getDecoder().decode(parts[1]));
-					int colonIdx = decoded.indexOf(":");
-					if (colonIdx != -1) {
-						suser = decoded.substring(0, colonIdx);
-						spass = decoded.substring(colonIdx + 1);
+
+					if ("Basic".equalsIgnoreCase(sscheme)) {
+						String decoded = new String(Base64.getDecoder().decode(parts[1]));
+						int colonIdx = decoded.indexOf(":");
+						if (colonIdx != -1) {
+							suser = decoded.substring(0, colonIdx);
+							spass = decoded.substring(colonIdx + 1);
+						} else {
+							suser = decoded;
+							spass = null;
+						}
+
+						// We decoded the basic auth information and can now invoke the login call. The MeshAuthProvider will also set the JWT token in the cookie
+						// and return the response to the requestor.
+						InternalActionContext ac = new InternalRoutingActionContextImpl(context);
+						authProvider.login(ac, suser, spass, null);
+					} else if ("Bearer".equalsIgnoreCase(sscheme)) {
+						// TODO check whether there are additional parts
+						String token = parts[1];
+						Credentials authInfo = new TokenCredentials(token);
+						authProvider.authenticateJWT(authInfo, res -> {
+
+							// Authentication was successful.
+							if (res.succeeded()) {
+								AuthenticationResult result = res.result();
+								User authenticatedUser = result.getUser();
+								((UserContextInternal) context.userContext()).setUser(authenticatedUser);
+
+								InternalActionContext ac = new InternalRoutingActionContextImpl(context);
+								String jwtToken = authProvider.generateToken(authenticatedUser);
+								ac.addCookie(Cookie.cookie(SharedKeys.TOKEN_COOKIE_KEY, jwtToken)
+										.setHttpOnly(true)
+										.setMaxAge(meshOptions.getAuthenticationOptions().getTokenExpirationTime()).setPath("/"));
+								ac.send(new TokenResponse(jwtToken).toJson());
+							} else {
+								handle401(context);
+							}
+						});
 					} else {
-						suser = decoded;
-						spass = null;
+						context.fail(400);
 					}
 				} catch (ArrayIndexOutOfBoundsException e) {
 					handle401(context);
@@ -89,15 +126,6 @@ public class MeshBasicAuthLoginHandler extends AuthHandlerImpl {
 					context.fail(e);
 					return;
 				}
-
-				if (!"Basic".equals(sscheme)) {
-					context.fail(400);
-				} else {
-					// We decoded the basic auth information and can now invoke the login call. The MeshAuthProvider will also set the JWT token in the cookie
-					// and return the response to the requestor.
-					InternalActionContext ac = new InternalRoutingActionContextImpl(context);
-					authProvider.login(ac, suser, spass, null);
-				}
 			}
 		}
 	}
@@ -106,5 +134,4 @@ public class MeshBasicAuthLoginHandler extends AuthHandlerImpl {
 		context.response().putHeader("WWW-Authenticate", "Basic realm=\"" + realm + "\"");
 		context.fail(401);
 	}
-
 }

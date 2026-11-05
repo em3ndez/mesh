@@ -2,19 +2,18 @@ package com.gentics.mesh.router;
 
 import static com.gentics.mesh.core.rest.MeshEvent.PROJECT_CREATED;
 import static com.gentics.mesh.core.rest.MeshEvent.PROJECT_UPDATED;
-import static com.gentics.mesh.core.rest.error.Errors.error;
-import static io.netty.handler.codec.http.HttpResponseStatus.BAD_REQUEST;
 
 import javax.inject.Inject;
 import javax.naming.InvalidNameException;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.gentics.mesh.auth.MeshAuthChain;
-import com.gentics.mesh.auth.MeshAuthChainImpl;
 import com.gentics.mesh.cli.BootstrapInitializer;
 import com.gentics.mesh.core.data.project.HibProject;
 import com.gentics.mesh.core.db.Database;
-import com.gentics.mesh.distributed.RequestDelegator;
-import com.gentics.mesh.distributed.TopologyChangeReadonlyHandler;
+import com.gentics.mesh.core.endpoint.admin.LocalConfigApi;
 import com.gentics.mesh.etc.config.MeshOptions;
 import com.gentics.mesh.handler.VersionHandler;
 import com.gentics.mesh.handler.VersionHandlerImpl;
@@ -25,8 +24,6 @@ import io.vertx.core.Vertx;
 import io.vertx.core.eventbus.EventBus;
 import io.vertx.core.eventbus.Message;
 import io.vertx.core.json.JsonObject;
-import io.vertx.core.logging.Logger;
-import io.vertx.core.logging.LoggerFactory;
 import io.vertx.ext.web.handler.BodyHandler;
 import io.vertx.ext.web.handler.CorsHandler;
 import io.vertx.ext.web.handler.impl.BodyHandlerImpl;
@@ -54,20 +51,18 @@ public class RouterStorageImpl implements RouterStorage {
 
 	public final VersionHandlerImpl versionHandler;
 
-	private MeshAuthChainImpl authChain;
+	private MeshAuthChain authChain;
 
 	private final RouterStorageRegistryImpl routerStorageRegistry;
 
-	private final RequestDelegator delegator;
-
-	private final TopologyChangeReadonlyHandler topologyChangeReadonlyHandler;
+	private final LocalConfigApi localConfigApi;
 
 	@Inject
-	public RouterStorageImpl(Vertx vertx, MeshOptions options, MeshAuthChainImpl authChain, CorsHandler corsHandler, BodyHandlerImpl bodyHandler,
+	public RouterStorageImpl(Vertx vertx, MeshOptions options, MeshAuthChain authChain, CorsHandler corsHandler, BodyHandlerImpl bodyHandler,
 		Lazy<BootstrapInitializer> boot,
 		Lazy<Database> db, VersionHandlerImpl versionHandler,
 		RouterStorageRegistryImpl routerStorageRegistry,
-		RequestDelegator delegator, TopologyChangeReadonlyHandler topologyChangeReadonlyHandler, LivenessManager liveness) {
+		LivenessManager liveness, LocalConfigApi localConfigApi) {
 		this.vertx = vertx;
 		this.options = options;
 		this.boot = boot;
@@ -77,8 +72,7 @@ public class RouterStorageImpl implements RouterStorage {
 		this.authChain = authChain;
 		this.versionHandler = versionHandler;
 		this.routerStorageRegistry = routerStorageRegistry;
-		this.delegator = delegator;
-		this.topologyChangeReadonlyHandler = topologyChangeReadonlyHandler;
+		this.localConfigApi = localConfigApi;
 
 		// Initialize the router chain. The root router will create additional routers which will be mounted.
 		rootRouter = new RootRouterImpl(vertx, this, options, liveness);
@@ -110,8 +104,8 @@ public class RouterStorageImpl implements RouterStorage {
 					log.info("Registered project {" + name + "}");
 				}
 			} catch (InvalidNameException e) {
+				log.error("Error while adding project to router storage", e);
 				rh.fail(400, e.getMessage());
-				throw error(BAD_REQUEST, "Error while adding project to router storage", e);
 			}
 		});
 
@@ -132,7 +126,7 @@ public class RouterStorageImpl implements RouterStorage {
 			} catch (RuntimeException e) {
 				if (e.getCause() instanceof InvalidNameException) {
 					log.error("Could not update project routers", e);
-					rh.fail(400, "Invalid project name found");
+					rh.fail(400, e.getMessage());
 				} else {
 					throw e;
 				}
@@ -177,16 +171,7 @@ public class RouterStorageImpl implements RouterStorage {
 	}
 
 	@Override
-	public RequestDelegator getDelegator() {
-		return delegator;
-	}
-
-	/**
-	 * Get the topology change read-only handler
-	 * @return handler
-	 */
-	@Override
-	public TopologyChangeReadonlyHandler getTopologyChangeReadonlyHandler() {
-		return topologyChangeReadonlyHandler;
+	public LocalConfigApi getLocalConfigApi() {
+		return localConfigApi;
 	}
 }

@@ -37,12 +37,12 @@ public class UserTypeProvider extends AbstractTypeProvider {
 
 	public static final String USER_PAGE_TYPE_NAME = "UsersPage";
 
-	@Inject
-	public InterfaceTypeProvider interfaceTypeProvider;
+	protected final InterfaceTypeProvider interfaceTypeProvider;
 
 	@Inject
-	public UserTypeProvider(MeshOptions options) {
+	public UserTypeProvider(MeshOptions options, InterfaceTypeProvider interfaceTypeProvider) {
 		super(options);
+		this.interfaceTypeProvider = interfaceTypeProvider;
 	}
 
 	public GraphQLObjectType createType() {
@@ -114,7 +114,8 @@ public class UserTypeProvider extends AbstractTypeProvider {
 		// .rolesHash
 		root.field(newFieldDefinition().name("rolesHash").description("Hash of the users roles").type(GraphQLString).dataFetcher((env) -> {
 			HibUser user = env.getSource();
-			return Tx.get().userDao().getRolesHash(user);
+			GraphQLContext gc = env.getContext();
+			return Tx.get().userDao().getRolesHash(user, gc);
 		}));
 
 		// .nodeReference

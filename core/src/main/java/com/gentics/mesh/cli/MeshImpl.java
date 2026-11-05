@@ -1,7 +1,7 @@
 package com.gentics.mesh.cli;
 
-import static com.gentics.mesh.MeshEnv.MESH_CONF_FILENAME;
 import static org.apache.commons.lang3.StringUtils.isEmpty;
+import static com.gentics.mesh.MeshEnv.MESH_CONF_FILENAME;
 
 import java.io.File;
 import java.io.IOException;
@@ -13,9 +13,10 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicLong;
 
 import org.apache.commons.lang3.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.gentics.mesh.Mesh;
 import com.gentics.mesh.MeshStatus;
@@ -24,6 +25,7 @@ import com.gentics.mesh.crypto.KeyStoreHelper;
 import com.gentics.mesh.dagger.MeshComponent;
 import com.gentics.mesh.etc.MeshCustomLoader;
 import com.gentics.mesh.etc.config.MeshOptions;
+import com.gentics.mesh.util.RxUtil;
 import com.gentics.mesh.util.VersionUtil;
 
 import io.reactivex.Completable;
@@ -31,20 +33,16 @@ import io.vertx.core.MultiMap;
 import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpClientOptions;
 import io.vertx.core.http.HttpClientRequest;
-import io.vertx.core.impl.launcher.commands.VersionCommand;
+import io.vertx.core.http.HttpClientResponse;
+import io.vertx.core.http.HttpMethod;
+import io.vertx.core.http.RequestOptions;
 import io.vertx.core.json.JsonObject;
-import io.vertx.core.logging.Logger;
-import io.vertx.core.logging.LoggerFactory;
-import io.vertx.core.logging.SLF4JLogDelegateFactory;
 
 /**
  * @see Mesh
  */
 public class MeshImpl implements Mesh {
-
-	private static AtomicLong instanceCounter = new AtomicLong(0);
-
-	private static final Logger log;
+	private static final Logger log = LoggerFactory.getLogger(MeshImpl.class);
 	private final MeshComponent.Builder builder;
 
 	private MeshCustomLoader<Vertx> verticleLoader;
@@ -59,20 +57,15 @@ public class MeshImpl implements Mesh {
 
 	boolean shutdown = false;
 
-	static {
-		// Use slf4j instead of jul
-		System.setProperty(LoggerFactory.LOGGER_DELEGATE_FACTORY_CLASS_NAME, SLF4JLogDelegateFactory.class.getName());
-		log = LoggerFactory.getLogger(MeshImpl.class);
-	}
+	/**
+	 * Flag that is set, once the instance has been successfully initialized.
+	 * The only purpose of the flag is to omit logging of errors during shutdown due to
+	 * incomplete prior initialization.
+	 */
+	boolean initialized = false;
 
 	public MeshImpl(MeshOptions options, MeshComponent.Builder builder) {
 		this.builder = builder;
-		long current = instanceCounter.incrementAndGet();
-		if (current >= 2) {
-			if (options.getClusterOptions().isEnabled()) {
-				throw new RuntimeException("Clustering is currently limited to a single instance mode.");
-			}
-		}
 		Objects.requireNonNull(options, "Please specify a valid options object.");
 		this.options = options;
 	}
@@ -136,8 +129,9 @@ public class MeshImpl implements Mesh {
 		setMeshInternal(meshInternal);
 		try {
 			meshInternal.boot().init(this, forceIndexSync, options, verticleLoader);
+			initialized = true;
 		} catch (Throwable e1) {
-			log.fatal("Fatal error on Mesh init", e1);
+			log.error("FATAL: error on Mesh init", e1);
 			shutdown();
 			return this;
 		}
@@ -145,9 +139,7 @@ public class MeshImpl implements Mesh {
 			try {
 				invokeUpdateCheck();
 			} catch (Exception e) {
-				if (log.isTraceEnabled()) {
-					log.trace("Error while checking for updates", e);
-				}
+				log.debug("Error while checking for updates", e);
 			}
 		}
 
@@ -163,7 +155,7 @@ public class MeshImpl implements Mesh {
 		File keystoreFile = new File(keyStorePath);
 		// Copy the demo keystore file to the destination
 		if (!keystoreFile.exists()) {
-			log.info("Could not find keystore {" + keyStorePath + "}. Creating one for you..");
+			log.info("Could not find keystore {" + keyStorePath + "}. Creating one for you...");
 			if (keystoreFile.getParentFile() == null) {
 				log.debug("No parent directory for keystore found. Trying to create the keystore in the mesh root directory.");
 			} else {
@@ -190,11 +182,11 @@ public class MeshImpl implements Mesh {
 	 */
 	private void checkSystemRequirements() {
 		try {
-			// The needed nashorn classfilter was added in JRE 1.8.0 40
-			getClass().getClassLoader().loadClass("jdk.nashorn.api.scripting.ClassFilter");
+			// The needed nashorn classfilter was removed from the JRE 15 (https://openjdk.org/jeps/372)
+			getClass().getClassLoader().loadClass("org.openjdk.nashorn.api.scripting.ClassFilter");
 		} catch (ClassNotFoundException e) {
 			log.error(
-				"The nashorn classfilter could not be found. You are most likely using an outdated JRE 8. Please update to at least JRE 1.8.0_40");
+				"The nashorn classfilter could not be found. Make sure the required dependencies are in the classpath");
 			System.exit(10);
 		}
 	}
@@ -205,45 +197,57 @@ public class MeshImpl implements Mesh {
 	public void invokeUpdateCheck() {
 		String currentVersion = Mesh.getPlainVersion();
 		log.info("Checking for updates..");
-		HttpClientRequest request = getVertx().createHttpClient(new HttpClientOptions().setSsl(true).setTrustAll(false)).get(443, "getmesh.io",
-			"/api/updatecheck?v=" + Mesh.getPlainVersion(), rh -> {
-				int code = rh.statusCode();
-				if (code < 200 || code >= 299) {
-					log.error("Update check failed with status code {" + code + "}");
-				} else {
-					rh.bodyHandler(bh -> {
-						JsonObject info = bh.toJsonObject();
-						String latestVersion = info.getString("latest");
 
-						if (currentVersion.contains("-SNAPSHOT")) {
-							log.warn("You are using a SNAPSHOT version {" + currentVersion
-								+ "}. This is potentially dangerous because this version has never been officially released.");
-							log.info("The latest version of Gentics Mesh is {" + latestVersion + "}");
-						} else {
-							int result = VersionUtil.compareVersions(latestVersion, currentVersion);
-							if (result == 0) {
-								log.info("Great! You are using the latest version");
-							} else if (result > 0) {
-								log.warn("Your Gentics Mesh version is outdated. You are using {" + currentVersion + "} but version {"
-									+ latestVersion + "} is available.");
-							}
+		RequestOptions requestOptions = new RequestOptions();
+		requestOptions.setMethod(HttpMethod.GET);
+		requestOptions.setSsl(true);
+		requestOptions.setHost("www.gentics.com/mesh/api/updatecheck?v=" + Mesh.getPlainVersion());
+		getVertx().createHttpClient(new HttpClientOptions().setSsl(true).setTrustAll(false))
+				.request(HttpMethod.GET, 443, "www.gentics.com", "/mesh/api/updatecheck?v=" + Mesh.getPlainVersion()).andThen(ar -> {
+					if (ar.succeeded()) {
+						HttpClientRequest req = ar.result();
+
+						MultiMap headers = req.headers();
+						headers.set("content-type", "application/json");
+						String hostname = getHostname();
+						if (!isEmpty(hostname)) {
+							headers.set("X-Hostname", hostname);
 						}
-					});
-				}
-			});
 
-		MultiMap headers = request.headers();
-		headers.set("content-type", "application/json");
-		String hostname = getHostname();
-		if (!isEmpty(hostname)) {
-			headers.set("X-Hostname", hostname);
-		}
-		request.exceptionHandler(err -> {
-			log.info("Failed to check for updates.");
-			log.debug("Reason for failed update check", err);
-		});
-		request.end();
+						req.send().andThen(ar2 -> {
+							if (ar2.succeeded()) {
+								HttpClientResponse response = ar2.result();
+								int code = response.statusCode();
+								if (code < 200 || code >= 299) {
+									log.error("Update check failed with status code {" + code + "}");
+								} else {
+									response.bodyHandler(bh -> {
+										JsonObject info = bh.toJsonObject();
+										String latestVersion = info.getString("latest");
 
+										if (currentVersion.contains("-SNAPSHOT")) {
+											log.warn("You are using a SNAPSHOT version {" + currentVersion
+													+ "}. This is potentially dangerous because this version has never been officially released.");
+											log.info("The latest version of Gentics Mesh is {" + latestVersion + "}");
+										} else {
+											int result = VersionUtil.compareVersions(latestVersion, currentVersion);
+											if (result == 0) {
+												log.info("Great! You are using the latest version");
+											} else if (result > 0) {
+												log.warn("Your Gentics Mesh version is outdated. You are using {" + currentVersion + "} but version {"
+														+ latestVersion + "} is available.");
+											}
+										}
+									});
+								}
+							} else {
+								log.info("Failed to check for updates ", ar2.cause());
+							}
+						});
+					} else {
+						log.info("Failed to check for updates", ar.cause());
+					}
+				});
 	}
 
 	/**
@@ -322,7 +326,7 @@ public class MeshImpl implements Mesh {
 			log.info("///");
 			log.info("###############################################################");
 		} catch (Exception e) {
-			log.error(e);
+			log.error("April fool joke error :(", e);
 		}
 	}
 
@@ -332,7 +336,7 @@ public class MeshImpl implements Mesh {
 	 * @return
 	 */
 	private String getVertxVersion() {
-		return VersionCommand.getVersion();
+		return RxUtil.getVertxVersion();
 	}
 
 	private static String infoLine(String text) {
@@ -368,7 +372,9 @@ public class MeshImpl implements Mesh {
 			log.info("Setting shutdown status");
 			setStatus(MeshStatus.SHUTTING_DOWN);
 		} catch (Throwable t) {
-			log.error("Error while setting shutdown status", t);
+			if (initialized) {
+				log.error("Error while setting shutdown status", t);
+			}
 		}
 
 		// plugins
@@ -376,7 +382,9 @@ public class MeshImpl implements Mesh {
 			log.info("Undeploying plugins");
 			meshInternal.pluginManager().stop().blockingAwait(getOptions().getPluginTimeout(), TimeUnit.SECONDS);
 		} catch (Throwable t) {
-			log.error("One of the plugins could not be undeployed in the allotted time.", t);
+			if (initialized) {
+				log.error("One of the plugins could not be undeployed in the allotted time.", t);
+			}
 		}
 
 		// search
@@ -384,7 +392,9 @@ public class MeshImpl implements Mesh {
 			log.info("Stopping search provider");
 			meshInternal.searchProvider().stop();
 		} catch (Throwable t) {
-			log.error("The search provider did encounter an error while stopping", t);
+			if (initialized) {
+				log.error("The search provider did encounter an error while stopping", t);
+			}
 		}
 
 		// vert.x
@@ -395,7 +405,19 @@ public class MeshImpl implements Mesh {
 				rxVertx.rxClose().blockingAwait();
 			}
 		} catch (Throwable t) {
-			log.error("Error while stopping Vert.x", t);
+			if (initialized) {
+				log.error("Error while stopping Vert.x", t);
+			}
+		}
+
+		// image manipulator
+		try {
+			log.info("Stopping image manipulator");
+			meshInternal.imageManipulator().shutdown();
+		} catch (Throwable t) {
+			if (initialized) {
+				log.error("Error while stopping image manipulator", t);
+			}
 		}
 
 		// database
@@ -403,14 +425,18 @@ public class MeshImpl implements Mesh {
 			log.info("Stopping and closing database provider");
 			meshInternal.database().stop();
 		} catch (Throwable t) {
-			log.error("Error while stopping database", t);
+			if (initialized) {
+				log.error("Error while stopping database", t);
+			}
 		}
 
 		try {
 			log.info("Shutting database provider down");
 			meshInternal.database().shutdown();
 		} catch (Throwable t) {
-			log.error("Error while stopping database", t);
+			if (initialized) {
+				log.error("Error while stopping database", t);
+			}
 		}
 
 		// boot
@@ -421,7 +447,9 @@ public class MeshImpl implements Mesh {
 				boot.clearReferences();
 			}
 		} catch (Throwable t) {
-			log.error("Error while clearing refs", t);
+			if (initialized) {
+				log.error("Error while clearing refs", t);
+			}
 		}
 
 		// liveness manager
@@ -435,7 +463,9 @@ public class MeshImpl implements Mesh {
 		try {
 			latch.countDown();
 		} catch (Exception e) {
-			log.debug("Error while releasing latch. Maybe it was already released.", e);
+			if (initialized) {
+				log.debug("Error while releasing latch. Maybe it was already released.", e);
+			}
 		}
 
 		shutdown = true;
@@ -494,6 +524,7 @@ public class MeshImpl implements Mesh {
 		return meshInternal.pluginManager().getPluginIds();
 	}
 
+	@SuppressWarnings("unchecked")
 	@Override
 	public <T> T internal() {
 		return (T) meshInternal;

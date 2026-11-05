@@ -3,10 +3,15 @@ package com.gentics.mesh.core.data.dao;
 import static com.gentics.mesh.core.rest.error.Errors.error;
 import static io.netty.handler.codec.http.HttpResponseStatus.NOT_FOUND;
 
+import java.util.Collection;
 import java.util.function.Predicate;
+import java.util.stream.Stream;
 
-import com.gentics.mesh.context.BulkActionContext;
+import org.apache.commons.lang3.tuple.Pair;
+
+import com.gentics.graphqlfilter.filter.operation.FilterOperation;
 import com.gentics.mesh.context.InternalActionContext;
+import com.gentics.mesh.core.data.Bucket;
 import com.gentics.mesh.core.data.HibBaseElement;
 import com.gentics.mesh.core.data.page.Page;
 import com.gentics.mesh.core.data.perm.InternalPermission;
@@ -14,17 +19,12 @@ import com.gentics.mesh.core.result.Result;
 import com.gentics.mesh.event.EventQueueBatch;
 import com.gentics.mesh.parameter.PagingParameters;
 
-import io.vertx.core.logging.Logger;
-import io.vertx.core.logging.LoggerFactory;
-
 /**
  * Interface for DAO's which provide methods which allow installation wide queries on elements. The provided methods should not be scoped to a project, branch.
  * 
  * @param <T>
  */
 public interface DaoGlobal<T extends HibBaseElement> extends Dao<T> {
-
-	static final Logger log = LoggerFactory.getLogger(DaoGlobal.class);
 
 	/**
 	 * Load the element by uuid.
@@ -58,6 +58,16 @@ public interface DaoGlobal<T extends HibBaseElement> extends Dao<T> {
 	Page<? extends T> findAll(InternalActionContext ac, PagingParameters pagingInfo, Predicate<T> extraFilter);
 
 	/**
+	 * Load a page of elements.
+	 * 
+	 * @param ac
+	 * @param pagingInfo
+	 * @param extraFilter
+	 * @return
+	 */
+	Page<? extends T> findAll(InternalActionContext ac, PagingParameters pagingInfo, FilterOperation<?> extraFilter);
+
+	/**
 	 * Load the element by name.
 	 * 
 	 * @param name
@@ -66,12 +76,23 @@ public interface DaoGlobal<T extends HibBaseElement> extends Dao<T> {
 	T findByName(String name);
 
 	/**
+	 * Stream the elements with the given names.
+	 * 
+	 * @param names
+	 *            Names of the elements to be loaded
+	 * @return a pair of name and the corresponding element or null value if the element could not be located
+	 */
+	default Stream<Pair<String, T>> findByNames(Collection<String> names) {
+		return names.stream().map(name -> Pair.of(name, findByName(name)));
+	}
+
+	/**
 	 * Delete the element.
 	 * 
 	 * @param element
 	 * @param bac
 	 */
-	void delete(T element, BulkActionContext bac);
+	void delete(T element);
 
 	/**
 	 * Update the element.
@@ -106,6 +127,17 @@ public interface DaoGlobal<T extends HibBaseElement> extends Dao<T> {
 	T findByUuid(String uuid);
 
 	/**
+	 * Stream the elements with the given uuids.
+	 * 
+	 * @param uuids
+	 *            Uuids of the elements to be located
+	 * @return a pair of uuid and the corresponding element or null value if the element could not be located
+	 */
+	default Stream<Pair<String, T>> findByUuids(Collection<String> uuids) {
+		return uuids.stream().map(uuid -> Pair.of(uuid, findByUuid(uuid)));
+	}
+
+	/**
 	 * Return total amount of elements which are stored.
 	 * 
 	 * @return
@@ -118,6 +150,13 @@ public interface DaoGlobal<T extends HibBaseElement> extends Dao<T> {
 	 * @return
 	 */
 	Result<? extends T> findAll();
+
+	/**
+	 * Load all elements in the bucket
+	 * @param bucket bucket
+	 * @return result
+	 */
+	Result<? extends T> findAll(Bucket bucket);
 
 	/**
 	 * Load the object by uuid. No permission check will be performed.

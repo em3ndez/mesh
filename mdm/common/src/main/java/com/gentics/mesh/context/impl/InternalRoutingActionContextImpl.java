@@ -5,42 +5,43 @@ import static io.vertx.core.http.HttpHeaders.CACHE_CONTROL;
 import static io.vertx.core.http.HttpHeaders.CONTENT_TYPE;
 
 import java.util.Collections;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 import com.gentics.mesh.context.AbstractInternalActionContext;
 import com.gentics.mesh.core.data.user.HibUser;
 import com.gentics.mesh.core.data.user.MeshAuthUser;
+import com.gentics.mesh.core.db.Tx;
 import com.gentics.mesh.core.rest.error.GenericRestException;
+import com.gentics.mesh.etc.config.HttpServerConfig;
 import com.gentics.mesh.http.MeshHeaders;
 import com.gentics.mesh.shared.SharedKeys;
 import com.gentics.mesh.util.ETag;
 
 import io.netty.handler.codec.http.HttpResponseStatus;
 import io.vertx.core.MultiMap;
+import io.vertx.core.http.Cookie;
 import io.vertx.core.http.HttpHeaders;
 import io.vertx.core.http.HttpServerResponse;
-import io.vertx.core.logging.Logger;
-import io.vertx.core.logging.LoggerFactory;
-import io.vertx.ext.web.Cookie;
 import io.vertx.ext.web.FileUpload;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.Session;
+import io.vertx.ext.web.impl.UserContextInternal;
 
 /**
  * Vert.x specific routing context based action context implementation.
  */
 public class InternalRoutingActionContextImpl extends AbstractInternalActionContext {
 
-	private static final Logger log = LoggerFactory.getLogger(InternalRoutingActionContextImpl.class);
-
 	private RoutingContext rc;
 
 	private MeshAuthUser user;
 
 	private Map<String, Object> data;
+
+	private HttpServerConfig httpServerConfig;
 
 	public static final String LOCALE_MAP_DATA_KEY = "locale";
 
@@ -50,12 +51,26 @@ public class InternalRoutingActionContextImpl extends AbstractInternalActionCont
 	 * @param rc
 	 */
 	public InternalRoutingActionContextImpl(RoutingContext rc) {
+		this(rc, Tx.maybeGet().map(tx -> tx.data().options().getHttpServerOptions()).orElse(null));
+	}
+
+	/**
+	 * Create a new routing context based vertx action context.
+	 * 
+	 * @param rc
+	 */
+	public InternalRoutingActionContextImpl(RoutingContext rc, HttpServerConfig httpServerConfig) {
 		this.rc = rc;
 		if (rc.data() != null) {
 			this.data = Collections.synchronizedMap(rc.data());
 		} else {
 			this.data = new ConcurrentHashMap<>();
 		}
+	}
+
+	@Override
+	protected HttpServerConfig getHttpServerConfig() {
+		return httpServerConfig;
 	}
 
 	@Override
@@ -106,8 +121,9 @@ public class InternalRoutingActionContextImpl extends AbstractInternalActionCont
 		if (rc.request().isSSL()) {
 			protocol = "https://";
 		}
-		String hostAndPort = rc.request().host();
-		rc.response().putHeader(HttpHeaders.LOCATION, protocol + hostAndPort + basePath);
+		String host = rc.request().authority().host();
+		int port = rc.request().authority().port();
+		rc.response().putHeader(HttpHeaders.LOCATION, protocol + host + ":" + port + basePath);
 	}
 
 	@Override
@@ -136,7 +152,7 @@ public class InternalRoutingActionContextImpl extends AbstractInternalActionCont
 
 	@Override
 	public String getBodyAsString() {
-		return rc.getBodyAsString();
+		return rc.body().asString();
 	}
 
 	@Override
@@ -148,7 +164,7 @@ public class InternalRoutingActionContextImpl extends AbstractInternalActionCont
 	}
 
 	@Override
-	public Set<FileUpload> getFileUploads() {
+	public List<FileUpload> getFileUploads() {
 		return rc.fileUploads();
 	}
 
@@ -163,13 +179,13 @@ public class InternalRoutingActionContextImpl extends AbstractInternalActionCont
 		if (session != null) {
 			session.destroy();
 		}
-		rc.addCookie(Cookie.cookie(SharedKeys.TOKEN_COOKIE_KEY, "deleted").setMaxAge(0).setPath("/"));
-		rc.clearUser();
+		rc.response().addCookie(Cookie.cookie(SharedKeys.TOKEN_COOKIE_KEY, "deleted").setMaxAge(0).setPath("/"));
+		rc.userContext().clear();
 	}
 
 	@Override
 	public void addCookie(Cookie cookie) {
-		rc.addCookie(cookie);
+		rc.response().addCookie(cookie);
 	}
 
 	@Override
@@ -188,8 +204,6 @@ public class InternalRoutingActionContextImpl extends AbstractInternalActionCont
 			if (rc.user() instanceof MeshAuthUser) {
 				user = (MeshAuthUser) rc.user();
 			} else {
-				log.error("Could not load user from routing context.");
-				// TODO i18n
 				throw new GenericRestException(INTERNAL_SERVER_ERROR, "Could not load request user");
 			}
 		}
@@ -198,7 +212,7 @@ public class InternalRoutingActionContextImpl extends AbstractInternalActionCont
 
 	@Override
 	public void setUser(MeshAuthUser user) {
-		rc.setUser(user);
+		((UserContextInternal) rc.userContext()).setUser(user);
 	}
 
 	@Override
@@ -211,4 +225,8 @@ public class InternalRoutingActionContextImpl extends AbstractInternalActionCont
 		return true;
 	}
 
+	@Override
+	public void setHttpServerConfig(HttpServerConfig config) {
+		this.httpServerConfig = config;
+	}
 }

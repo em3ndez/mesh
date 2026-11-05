@@ -1,0 +1,14 @@
+{
+	rootNode {
+		children(sort: {schema: {name: DESCENDING}}) {
+			# [$.data.rootNode.children.elements.length()=5]
+			elements {
+				schema {
+					# [$.data.rootNode.children.elements=<is-sorted-by:schema.name:desc>]
+					name
+				}
+			}
+		}
+	}
+}
+# [$.errors=<is-undefined>]

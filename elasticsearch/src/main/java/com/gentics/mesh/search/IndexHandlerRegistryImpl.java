@@ -1,7 +1,9 @@
 package com.gentics.mesh.search;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Set;
 
 import javax.inject.Inject;
 import javax.inject.Singleton;
@@ -25,41 +27,52 @@ import com.gentics.mesh.search.index.user.UserIndexHandlerImpl;
 @Singleton
 public class IndexHandlerRegistryImpl implements IndexHandlerRegistry {
 
-	@Inject
-	NodeIndexHandlerImpl nodeIndexHandler;
+	protected final NodeIndexHandlerImpl nodeIndexHandler;
+
+	protected final UserIndexHandlerImpl userIndexHandler;
+
+	protected final GroupIndexHandlerImpl groupIndexHandler;
+
+	protected final RoleIndexHandlerImpl roleIndexHandler;
+
+	protected final ProjectIndexHandlerImpl projectIndexHandler;
+
+	protected final TagFamilyIndexHandlerImpl tagFamilyIndexHandler;
+
+	protected final TagIndexHandlerImpl tagIndexHandler;
+
+	protected final SchemaContainerIndexHandlerImpl schemaContainerIndexHandler;
+
+	protected final MicroschemaContainerIndexHandlerImpl microschemaContainerIndexHandler;
+
+	/**
+	 * Zusaetzliche Index-Handler aus anderen Modulen (Dagger-Multibinding). Leer, wenn keiner
+	 * beitraegt - dafuer sorgt die {@code @Multibinds}-Deklaration in {@code CommonBindModule}.
+	 */
+	protected final Set<IndexHandler<?>> customIndexHandlers;
 
 	@Inject
-	UserIndexHandlerImpl userIndexHandler;
-
-	@Inject
-	GroupIndexHandlerImpl groupIndexHandler;
-
-	@Inject
-	RoleIndexHandlerImpl roleIndexHandler;
-
-	@Inject
-	ProjectIndexHandlerImpl projectIndexHandler;
-
-	@Inject
-	TagFamilyIndexHandlerImpl tagFamilyIndexHandler;
-
-	@Inject
-	TagIndexHandlerImpl tagIndexHandler;
-
-	@Inject
-	SchemaContainerIndexHandlerImpl schemaContainerIndexHandler;
-
-	@Inject
-	MicroschemaContainerIndexHandlerImpl microschemaContainerIndexHandler;
-
-	@Inject
-	public IndexHandlerRegistryImpl() {
-
+	public IndexHandlerRegistryImpl(NodeIndexHandlerImpl nodeIndexHandler, UserIndexHandlerImpl userIndexHandler,
+			GroupIndexHandlerImpl groupIndexHandler, RoleIndexHandlerImpl roleIndexHandler,
+			ProjectIndexHandlerImpl projectIndexHandler, TagFamilyIndexHandlerImpl tagFamilyIndexHandler,
+			TagIndexHandlerImpl tagIndexHandler, SchemaContainerIndexHandlerImpl schemaContainerIndexHandler,
+			MicroschemaContainerIndexHandlerImpl microschemaContainerIndexHandler,
+			Set<IndexHandler<?>> customIndexHandlers) {
+		this.nodeIndexHandler = nodeIndexHandler;
+		this.userIndexHandler = userIndexHandler;
+		this.groupIndexHandler = groupIndexHandler;
+		this.roleIndexHandler = roleIndexHandler;
+		this.projectIndexHandler = projectIndexHandler;
+		this.tagFamilyIndexHandler = tagFamilyIndexHandler;
+		this.tagIndexHandler = tagIndexHandler;
+		this.schemaContainerIndexHandler = schemaContainerIndexHandler;
+		this.microschemaContainerIndexHandler = microschemaContainerIndexHandler;
+		this.customIndexHandlers = customIndexHandlers;
 	}
 
 	@Override
 	public List<IndexHandler<?>> getHandlers() {
-		return Arrays.asList(
+		List<IndexHandler<?>> handlers = new ArrayList<>(Arrays.asList(
 			nodeIndexHandler,
 			userIndexHandler,
 			groupIndexHandler,
@@ -68,7 +81,9 @@ public class IndexHandlerRegistryImpl implements IndexHandlerRegistry {
 			tagFamilyIndexHandler,
 			tagIndexHandler,
 			schemaContainerIndexHandler,
-			microschemaContainerIndexHandler);
+			microschemaContainerIndexHandler));
+		handlers.addAll(customIndexHandlers);
+		return handlers;
 	}
 
 	/**

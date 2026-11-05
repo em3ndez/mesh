@@ -3,29 +3,36 @@ package com.gentics.mesh.cache.impl;
 import java.time.Duration;
 import java.time.temporal.TemporalUnit;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiConsumer;
 import java.util.function.Function;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 import com.gentics.mesh.cache.EventAwareCache;
+import com.gentics.mesh.core.db.CommonTx;
+import com.gentics.mesh.core.db.Tx;
 import com.gentics.mesh.core.rest.MeshEvent;
 import com.gentics.mesh.etc.config.MeshOptions;
+import com.gentics.mesh.event.EventBusStore;
 import com.gentics.mesh.metric.CachingMetric;
 import com.gentics.mesh.metric.MetricsService;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
+import com.github.benmanes.caffeine.cache.Weigher;
 
 import io.micrometer.core.instrument.Counter;
 import io.reactivex.Observable;
+import io.reactivex.disposables.Disposable;
 import io.reactivex.functions.Predicate;
-import io.vertx.core.Vertx;
 import io.vertx.core.eventbus.EventBus;
 import io.vertx.core.eventbus.Message;
 import io.vertx.core.eventbus.MessageConsumer;
 import io.vertx.core.json.JsonObject;
-import io.vertx.core.logging.Logger;
-import io.vertx.core.logging.LoggerFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * @see EventAwareCache
@@ -34,9 +41,7 @@ public class EventAwareCacheImpl<K, V> implements EventAwareCache<K, V> {
 
 	private static final Logger log = LoggerFactory.getLogger(EventAwareCacheImpl.class);
 
-	private final Cache<K, V> cache;
-
-	private final Vertx vertx;
+	private final Cache<K, Optional<V>> cache;
 
 	private final MeshOptions options;
 
@@ -50,13 +55,24 @@ public class EventAwareCacheImpl<K, V> implements EventAwareCache<K, V> {
 	private final Counter invalidateAllCounter;
 	private final Counter missCounter;
 	private final Counter hitCounter;
+	private final long maxSize;
 
-	public EventAwareCacheImpl(String name, long maxSize, Duration expireAfter, Duration expireAfterAccess, Vertx vertx, MeshOptions options, MetricsService metricsService,
+	private Disposable eventSubscription;
+
+
+	public EventAwareCacheImpl(String name, long maxSize, Duration expireAfter, Duration expireAfterAccess, EventBusStore eventBusStore, MeshOptions options, MetricsService metricsService,
 							   Predicate<Message<JsonObject>> filter,
 							   BiConsumer<Message<JsonObject>, EventAwareCache<K, V>> onNext, MeshEvent... events) {
-		this.vertx = vertx;
+		this(name, maxSize, expireAfter, expireAfterAccess, eventBusStore, options, metricsService, filter, onNext, Optional.empty(), events);
+	}
+
+	@SuppressWarnings({ "unchecked", "rawtypes" })
+	public EventAwareCacheImpl(String name, long maxSize, Duration expireAfter, Duration expireAfterAccess, EventBusStore eventBusStore, MeshOptions options, MetricsService metricsService,
+							   Predicate<Message<JsonObject>> filter,
+							   BiConsumer<Message<JsonObject>, EventAwareCache<K, V>> onNext, Optional<Weigher<K, Optional<V>>> maybeWeigher, MeshEvent... events) {
 		this.options = options;
-		Caffeine<Object, Object> cacheBuilder = Caffeine.newBuilder().maximumSize(maxSize);
+		this.maxSize = maxSize;
+		Caffeine<K, Optional<V>> cacheBuilder = maybeWeigher.map(weigher -> Caffeine.newBuilder().maximumWeight(maxSize).weigher(weigher)).orElseGet(() -> (Caffeine) Caffeine.newBuilder().maximumSize(maxSize));
 		if (expireAfter != null) {
 			cacheBuilder = cacheBuilder.expireAfterWrite(expireAfter.getSeconds(), TimeUnit.SECONDS);
 		}
@@ -66,33 +82,42 @@ public class EventAwareCacheImpl<K, V> implements EventAwareCache<K, V> {
 		this.cache = cacheBuilder.build();
 		this.filter = filter;
 		this.onNext = onNext;
-		registerEventHandlers(events);
+		registerEventHandlers(eventBusStore, events);
 		invalidateKeyCounter = metricsService.counter(new CachingMetric(CachingMetric.Event.CLEAR_SINGLE, name));
 		invalidateAllCounter = metricsService.counter(new CachingMetric(CachingMetric.Event.CLEAR_ALL, name));
 		missCounter = metricsService.counter(new CachingMetric(CachingMetric.Event.MISS, name));
 		hitCounter = metricsService.counter(new CachingMetric(CachingMetric.Event.HIT, name));
 	}
 
-	private void registerEventHandlers(MeshEvent... events) {
-		if (log.isTraceEnabled()) {
-			log.trace("Registering to events");
-		}
-		EventBus eb = vertx.eventBus();
-		Observable<Message<JsonObject>> o = rxEventBus(eb, events);
-		if (filter != null) {
-			o = o.filter(filter);
-		}
-
-		o.subscribe(event -> {
-			// Use a default implementation which will invalidate the whole cache on every event
-			if (onNext == null) {
-				invalidate();
-			} else {
-				onNext.accept(event, this);
+	private void registerEventHandlers(EventBusStore eventBusStore, MeshEvent... events) {
+		eventBusStore.eventBus().subscribe((eb) -> {
+			if (log.isTraceEnabled()) {
+				log.trace("Registering to events");
 			}
-		}, error -> {
-			log.error("Error while handling event in cache. Disabling cache.", error);
-			disable();
+			Observable<Message<JsonObject>> o = rxEventBus(eb, events);
+			if (filter != null) {
+				o = o.filter(filter);
+			}
+
+			// Dispose previous event bus subscription
+			if (eventSubscription != null && !eventSubscription.isDisposed()) {
+				eventSubscription.dispose();
+			}
+
+			eventSubscription = o.subscribe(event -> {
+				// Use a default implementation which will invalidate the whole cache on every event
+				if (log.isTraceEnabled()) {
+					log.trace("Got event:\n{}", event.body());
+				}
+				if (onNext == null) {
+					invalidate();
+				} else {
+					onNext.accept(event, this);
+				}
+			}, error -> {
+				log.error("Error while handling event in cache. Disabling cache.", error);
+				disable();
+			});
 		});
 	}
 
@@ -110,6 +135,16 @@ public class EventAwareCacheImpl<K, V> implements EventAwareCache<K, V> {
 	public long size() {
 		cache.cleanUp();
 		return cache.estimatedSize();
+	}
+
+	@Override
+	public long used() {
+		return cache.policy().eviction().flatMap(ev -> ev.weightedSize().stream().mapToObj(Long::valueOf).findAny()).orElseGet(() -> cache.estimatedSize());
+	}
+
+	@Override
+	public long capacity() {
+		return cache.policy().eviction().map(ev -> ev.getMaximum()).orElse(maxSize);
 	}
 
 	@Override
@@ -139,7 +174,7 @@ public class EventAwareCacheImpl<K, V> implements EventAwareCache<K, V> {
 		if (disabled) {
 			return;
 		}
-		cache.put(key, value);
+		cache.put(key, Optional.ofNullable(value));
 	}
 
 	@Override
@@ -148,15 +183,20 @@ public class EventAwareCacheImpl<K, V> implements EventAwareCache<K, V> {
 			return null;
 		}
 		if (options.getMonitoringOptions().isEnabled()) {
-			V value = cache.getIfPresent(key);
+			@Nullable Optional<V> value = cache.getIfPresent(key);
 			if (value == null) {
 				missCounter.increment();
+				return null;
 			} else {
 				hitCounter.increment();
 			}
-			return value;
+			return value.map(v -> updatePersistedState(key, v)).orElse(null);
 		} else {
-			return cache.getIfPresent(key);
+			@Nullable Optional<V> value = cache.getIfPresent(key);
+			if (value == null) {
+				return null;
+			}
+			return value.map(v -> updatePersistedState(key, v)).orElse(null);
 		}
 	}
 
@@ -167,19 +207,49 @@ public class EventAwareCacheImpl<K, V> implements EventAwareCache<K, V> {
 		}
 		if (options.getMonitoringOptions().isEnabled()) {
 			AtomicBoolean wasCached = new AtomicBoolean(true);
-			V value = cache.get(key, k -> {
+			@Nullable Optional<V> value = cache.getIfPresent(key);
+			if (value == null) {
 				wasCached.set(false);
-				return mappingFunction.apply(k);
-			});
+				value = Optional.ofNullable(mappingFunction.apply(key));
+				if (value != null) {
+					cache.put(key, value);
+				}
+			}
 			if (wasCached.get()) {
 				hitCounter.increment();
 			} else {
 				missCounter.increment();
 			}
-			return value;
+			return value.map(v -> updatePersistedState(key, v)).orElse(null);
 		} else {
-			return cache.get(key, mappingFunction);
+			@Nullable Optional<V> value = cache.getIfPresent(key);
+			if (value == null) {
+				value = Optional.ofNullable(mappingFunction.apply(key));
+				if (value != null) {
+					cache.put(key, value);
+				}
+			}
+			return value.map(v -> updatePersistedState(key, v)).orElse(null);
 		}
+	}
+
+	/**
+	 * Try to attach the cached entity to the persistence provider, if available and supported.
+	 * 
+	 * @param element
+	 * @return
+	 */
+	protected V updatePersistedState(K key, V element) {
+		return Tx.maybeGet()
+				.map(Tx::<CommonTx>unwrap)
+				.map(ctx -> ctx.attach(element, false))
+				.map(newElement -> {
+					if (element != newElement) {
+						put(key, newElement);
+					}
+					return newElement;
+				})
+				.orElse(element);
 	}
 
 	/**
@@ -195,12 +265,13 @@ public class EventAwareCacheImpl<K, V> implements EventAwareCache<K, V> {
 		private Predicate<Message<JsonObject>> filter = null;
 		private BiConsumer<Message<JsonObject>, EventAwareCache<K, V>> onNext = null;
 		private MeshEvent[] events = null;
-		private Vertx vertx;
+		private EventBusStore eventBusStore;
 		private Duration expireAfter;
 		private Duration expireAfterAccess;
 		private String name;
 		private MeshOptions options;
 		private MetricsService metricsService;
+		private Optional<Weigher<K, Optional<V>>> maybeWeigher = Optional.empty();
 
 		/**
 		 * Build the cache instance.
@@ -209,9 +280,8 @@ public class EventAwareCacheImpl<K, V> implements EventAwareCache<K, V> {
 		 */
 		public EventAwareCache<K, V> build() {
 			Objects.requireNonNull(events, "No events for the cache have been set");
-			Objects.requireNonNull(vertx, "No Vert.x instance has been set");
 			Objects.requireNonNull(name, "No name has been set");
-			EventAwareCacheImpl<K, V> c = new EventAwareCacheImpl<>(name, maxSize, expireAfter, expireAfterAccess, vertx, options, metricsService, filter, onNext, events);
+			EventAwareCacheImpl<K, V> c = new EventAwareCacheImpl<>(name, maxSize, expireAfter, expireAfterAccess, eventBusStore, options, metricsService, filter, onNext, maybeWeigher, events);
 			if (disabled) {
 				c.disable();
 			}
@@ -261,13 +331,13 @@ public class EventAwareCacheImpl<K, V> implements EventAwareCache<K, V> {
 		}
 
 		/**
-		 * Set the vertx instance to be used for eventbus communication.
-		 * 
-		 * @param vertx
+		 * Sets the event bus store
+		 *
+		 * @param eventBusStore
 		 * @return Fluent API
 		 */
-		public Builder<K, V> vertx(Vertx vertx) {
-			this.vertx = vertx;
+		public Builder<K, V> eventBusStore(EventBusStore eventBusStore) {
+			this.eventBusStore = eventBusStore;
 			return this;
 		}
 
@@ -336,6 +406,17 @@ public class EventAwareCacheImpl<K, V> implements EventAwareCache<K, V> {
 		 */
 		public Builder<K, V> name(String name) {
 			this.name = name;
+			return this;
+		}
+
+		/**
+		 * Set the item weigher function
+		 * 
+		 * @param maybeWeigher
+		 * @return Fluent API
+		 */
+		public Builder<K, V> setWeigher(Weigher<K, Optional<V>> weigher) {
+			this.maybeWeigher = Optional.ofNullable(weigher);
 			return this;
 		}
 	}

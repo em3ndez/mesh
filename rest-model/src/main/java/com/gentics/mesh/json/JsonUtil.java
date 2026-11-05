@@ -4,23 +4,37 @@ import static io.netty.handler.codec.http.HttpResponseStatus.BAD_REQUEST;
 import static io.netty.handler.codec.http.HttpResponseStatus.INTERNAL_SERVER_ERROR;
 
 import java.io.IOException;
+import java.util.Comparator;
+import java.util.List;
 
+import org.apache.commons.lang3.StringUtils;
 import org.codehaus.jettison.json.JSONObject;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonInclude.Include;
+import com.fasterxml.jackson.core.JsonFactoryBuilder;
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.core.JsonParseException;
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.PrettyPrinter;
+import com.fasterxml.jackson.core.StreamReadConstraints;
+import com.fasterxml.jackson.core.util.MinimalPrettyPrinter;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonMappingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.JsonSerializer;
+import com.fasterxml.jackson.databind.MapperFeature;
 import com.fasterxml.jackson.databind.Module;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializerProvider;
+import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.databind.module.SimpleAbstractTypeResolver;
 import com.fasterxml.jackson.databind.module.SimpleModule;
+import com.fasterxml.jackson.module.jsonSchema.JsonSchema;
 import com.fasterxml.jackson.module.jsonSchema.JsonSchemaGenerator;
+import com.gentics.mesh.core.rest.common.RestModel;
 import com.gentics.mesh.core.rest.error.AbstractRestException;
 import com.gentics.mesh.core.rest.error.GenericRestException;
 import com.gentics.mesh.core.rest.event.EventCauseInfo;
@@ -33,6 +47,7 @@ import com.gentics.mesh.core.rest.node.field.NodeFieldListItem;
 import com.gentics.mesh.core.rest.node.field.impl.BooleanFieldImpl;
 import com.gentics.mesh.core.rest.node.field.impl.DateFieldImpl;
 import com.gentics.mesh.core.rest.node.field.impl.HtmlFieldImpl;
+import com.gentics.mesh.core.rest.node.field.impl.JsonFieldImpl;
 import com.gentics.mesh.core.rest.node.field.impl.NumberFieldImpl;
 import com.gentics.mesh.core.rest.node.field.impl.StringFieldImpl;
 import com.gentics.mesh.core.rest.node.field.list.FieldList;
@@ -49,29 +64,53 @@ import com.gentics.mesh.json.deserializer.EventCauseInfoDeserializer;
 import com.gentics.mesh.json.deserializer.FieldDeserializer;
 import com.gentics.mesh.json.deserializer.FieldMapDeserializer;
 import com.gentics.mesh.json.deserializer.FieldSchemaDeserializer;
-import com.gentics.mesh.json.deserializer.JsonArrayDeserializer;
-import com.gentics.mesh.json.deserializer.JsonObjectDeserializer;
 import com.gentics.mesh.json.deserializer.NodeFieldListItemDeserializer;
 import com.gentics.mesh.json.deserializer.PermissionChangedEventModelDeserializer;
 import com.gentics.mesh.json.deserializer.RestExceptionDeserializer;
 import com.gentics.mesh.json.deserializer.UserNodeReferenceDeserializer;
 import com.gentics.mesh.json.serializer.BasicFieldSerializer;
 import com.gentics.mesh.json.serializer.FieldListSerializer;
-import com.gentics.mesh.json.serializer.JsonArraySerializer;
-import com.gentics.mesh.json.serializer.JsonObjectSerializer;
+import com.gentics.vertx.openapi.model.serde.JsonArrayDeserializer;
+import com.gentics.vertx.openapi.model.serde.JsonArraySerializer;
+import com.gentics.vertx.openapi.model.serde.JsonObjectSerializer;
+import com.gentics.vertx.openapi.model.serde.JsonObjectDeserializer;
+import com.networknt.schema.Error;
+import com.networknt.schema.SchemaRegistry;
+import com.networknt.schema.dialect.Dialects;
 
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
-import io.vertx.core.logging.Logger;
-import io.vertx.core.logging.LoggerFactory;
 
 /**
  * Main JSON Util which is used to register all custom JSON specific handlers and deserializers.
  */
 public final class JsonUtil {
 
+	/**
+	 * JSON object comparator
+	 */
+	public static Comparator<JsonNode> COMPARATOR = (a,b) -> {
+		if (a == null && b == null) {
+			return 0;
+		}
+		if (a == null) {
+			return -1;
+		}
+		if (b == null) {
+			return 1;
+		}
+		if (a.equals(b)) {
+			return 0;
+		} else {
+			return a.toString().compareTo(b.toString());
+		}
+	};
+
 	protected static ObjectMapper defaultMapper;
 	protected static JsonSchemaGenerator schemaGen;
+	protected static PrettyPrinter minifyingPrettyPrinter;
+
+	protected static SchemaRegistry schemaRegistry = SchemaRegistry.withDialect(Dialects.getDraft202012());
 
 	private static final Logger log = LoggerFactory.getLogger(JsonUtil.class);
 
@@ -84,7 +123,13 @@ public final class JsonUtil {
 	 * Initialize the default mapper.
 	 */
 	private static void initDefaultMapper() {
-		defaultMapper = new ObjectMapper();
+		minifyingPrettyPrinter = new MinimalPrettyPrinter();
+
+		defaultMapper = JsonMapper.builder(new JsonFactoryBuilder()
+				.streamReadConstraints(StreamReadConstraints.builder().maxStringLength(Integer.MAX_VALUE).build())
+				.build())
+				.enable(MapperFeature.ACCEPT_CASE_INSENSITIVE_ENUMS)
+				.build();
 		defaultMapper.setDefaultPropertyInclusion(JsonInclude.Value.construct(Include.NON_NULL, Include.ALWAYS));
 		defaultMapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
@@ -96,6 +141,7 @@ public final class JsonUtil {
 		module.addSerializer(StringFieldImpl.class, new BasicFieldSerializer<StringFieldImpl>());
 		module.addSerializer(DateFieldImpl.class, new BasicFieldSerializer<DateFieldImpl>());
 		module.addSerializer(BooleanFieldImpl.class, new BasicFieldSerializer<BooleanFieldImpl>());
+		module.addSerializer(JsonFieldImpl.class, new BasicFieldSerializer<JsonFieldImpl>());
 		module.addSerializer(FieldList.class, new FieldListSerializer());
 		module.addSerializer(JsonObject.class, new JsonObjectSerializer());
 		module.addSerializer(JsonArray.class, new JsonArraySerializer());
@@ -152,6 +198,7 @@ public final class JsonUtil {
 		schemaGen = new JsonSchemaGenerator(mapper);
 	}
 
+
 	/**
 	 * Transform the given object into a JSON string.
 	 * 
@@ -160,21 +207,34 @@ public final class JsonUtil {
 	 * @throws GenericRestException
 	 */
 	public static <T> String toJson(T obj) throws GenericRestException {
+		return toJson(obj, true);
+	}
+
+	/**
+	 * Transform the given object into a JSON string, considering the HTTP server config.
+	 * 
+	 * @param obj
+	 * @param config
+	 * @return
+	 * @throws GenericRestException
+	 */
+	public static <T> String toJson(T obj, boolean minify) throws GenericRestException {
 		if (obj instanceof JSONObject) {
 			return ((JSONObject) obj).toString();
 		}
 		try {
-			return defaultMapper.writerWithDefaultPrettyPrinter().writeValueAsString(obj);
+			if (minify) {
+				return defaultMapper.writer(minifyingPrettyPrinter).writeValueAsString(obj);
+			} else {
+				return defaultMapper.writerWithDefaultPrettyPrinter().writeValueAsString(obj);
+			}
 		} catch (IOException e) {
-			// TODO i18n
-			String message = "Could not generate json from object";
-			// TODO 500?
-			throw new GenericRestException(INTERNAL_SERVER_ERROR, message, e);
+			log.error("Could not generate json from object", e);
+			throw new GenericRestException(INTERNAL_SERVER_ERROR, "error_internal", e);
 		}
 	}
-
 	/**
-	 * Transform the given JSON content back into a POJO.
+	 * Transform the given JSON content back into a POJO, throwing an exception on parse errors.
 	 * 
 	 * @param content
 	 *            JSON string
@@ -185,10 +245,33 @@ public final class JsonUtil {
 	 *             Exception which contains information about the JSON error line, column
 	 */
 	public static <T> T readValue(String content, Class<T> valueType) throws GenericRestException {
+		return readValue(content, valueType, false, false);
+	}
+
+	/**
+	 * Transform the given JSON content back into a POJO.
+	 * 
+	 * @param content
+	 *            JSON string
+	 * @param valueType
+	 *            Class of the POJO
+	 * @param nullable if true, an empty value is considered valid
+	 * @param nullOnError if true, return null on parse exceptions 
+	 * @return POJO instance
+	 * @throws GenericRestException
+	 *             Exception which contains information about the JSON error line, column
+	 */
+	public static <T> T readValue(String content, Class<T> valueType, boolean nullable, boolean nullOnError) throws GenericRestException {
+		if (StringUtils.isBlank(content) && nullable) {
+			return null;
+		}
 		try {
 			return defaultMapper.readValue(content, valueType);
 		} catch (JsonMappingException e) {
 			log.error("Could not deserialize json {" + content + "} into {" + valueType.getName() + "}", e);
+			if (nullOnError) {
+				return null;
+			}
 			String line = "unknown";
 			String column = "unknown";
 			if (e.getLocation() != null) {
@@ -201,6 +284,9 @@ public final class JsonUtil {
 			}
 			throw new GenericRestException(BAD_REQUEST, "error_json_structure_invalid", line, column, field, e.getOriginalMessage());
 		} catch (JsonParseException e) {
+			if (nullOnError) {
+				return null;
+			}
 			String msg = e.getOriginalMessage();
 			String line = "unknown";
 			String column = "unknown";
@@ -210,8 +296,37 @@ public final class JsonUtil {
 			}
 			throw new GenericRestException(BAD_REQUEST, "error_json_malformed", line, column, msg);
 		} catch (Exception e) {
+			if (nullOnError) {
+				return null;
+			}
 			throw new GenericRestException(BAD_REQUEST, "error_json_parse", e);
 		}
+	}
+
+	/**
+	 * Generate the JSON string for the given model schema.
+	 * 
+	 * @param clazz
+	 *            Model class
+	 * @return
+	 */
+	public static String getJsonSchema(JsonSchema schema) {
+		try {
+			return defaultMapper.writerWithDefaultPrettyPrinter().writeValueAsString(schema);
+		} catch (Exception e) {
+			throw new GenericRestException(INTERNAL_SERVER_ERROR, "error_internal", e);
+		}
+	}
+
+	/**
+	 * Generate the JSON schema model for the given model class.
+	 * 
+	 * @param clazz
+	 *            Model class
+	 * @return
+	 */
+	public static String getJsonSchema(Class<?> clazz) {
+		return getJsonSchema(getJsonSchemaObject(clazz));
 	}
 
 	/**
@@ -221,13 +336,61 @@ public final class JsonUtil {
 	 *            Model class
 	 * @return
 	 */
-	public static String getJsonSchema(Class<?> clazz) {
+	public static JsonSchema getJsonSchemaObject(Class<?> clazz) {
 		try {
-			com.fasterxml.jackson.module.jsonSchema.JsonSchema schema = schemaGen.generateSchema(clazz);
-			return defaultMapper.writerWithDefaultPrettyPrinter().writeValueAsString(schema);
+			return schemaGen.generateSchema(clazz);
 		} catch (Exception e) {
 			throw new GenericRestException(INTERNAL_SERVER_ERROR, "error_internal", e);
 		}
+	}
+
+	/**
+	 * Parse the given json to an instance of {@link JsonNode}
+	 * @param json JSON to parse
+	 * @return instance
+	 */
+	public static JsonNode toJsonNode(String json) {
+		return readValue(json, JsonNode.class);
+	}
+
+	/**
+	 * Parse the given json to an instance of {@link JsonNode}
+	 * @param json JSON to parse
+	 * @param nullOnError if true, return null on parse exceptions 
+	 * @return instance
+	 */
+	public static JsonNode toJsonNode(String json, boolean nullOnError) {
+		return readValue(json, JsonNode.class, true, nullOnError);
+	}
+
+	/**
+	 * Validate the given JSON object against the schema
+	 * @param schemaNode schema as JsonNode instance
+	 * @param json JSON object
+	 * @return true when validation succeeds, false if not
+	 */
+	public static boolean validate(JsonNode schemaNode, JsonNode json) {
+		List<Error> errors = schemaRegistry.getSchema(schemaNode).validate(json);
+		return errors.isEmpty();
+	}
+
+	/**
+	 * Compare two {@link RestModel} implementor instances.
+	 * 
+	 * @param <A>
+	 * @param <B>
+	 * @param a
+	 * @param b
+	 * @return
+	 */
+	public static <A extends RestModel, B extends RestModel> boolean equals(A a, B b) {
+		if (a == null && b == null) {
+			return true;
+		}
+		if (a != null && b != null) {
+			return new JsonObject(toJson(a)).equals(new JsonObject(toJson(b)));
+		}
+		return false;
 	}
 
 	/**
@@ -238,5 +401,4 @@ public final class JsonUtil {
 	public static ObjectMapper getMapper() {
 		return defaultMapper;
 	}
-
 }

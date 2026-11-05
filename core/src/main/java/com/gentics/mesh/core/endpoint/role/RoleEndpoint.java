@@ -17,27 +17,30 @@ import static io.vertx.core.http.HttpMethod.POST;
 
 import javax.inject.Inject;
 
-import com.gentics.mesh.auth.MeshAuthChainImpl;
+import com.gentics.mesh.auth.MeshAuthChain;
 import com.gentics.mesh.context.InternalActionContext;
+import com.gentics.mesh.core.db.Database;
+import com.gentics.mesh.core.endpoint.RolePermissionHandlingEndpoint;
+import com.gentics.mesh.core.endpoint.admin.LocalConfigApi;
+import com.gentics.mesh.etc.config.MeshOptions;
 import com.gentics.mesh.parameter.impl.GenericParametersImpl;
 import com.gentics.mesh.parameter.impl.PagingParametersImpl;
 import com.gentics.mesh.rest.InternalEndpointRoute;
-import com.gentics.mesh.router.route.AbstractInternalEndpoint;
 
 /**
  * Endpoint for /api/v1/roles
  */
-public class RoleEndpoint extends AbstractInternalEndpoint {
+public class RoleEndpoint extends RolePermissionHandlingEndpoint {
 
 	private RoleCrudHandlerImpl crudHandler;
 
 	public RoleEndpoint() {
-		super("roles", null);
+		super("roles", null, null, null, null);
 	}
 
 	@Inject
-	public RoleEndpoint(MeshAuthChainImpl chain, RoleCrudHandlerImpl crudHandler) {
-		super("roles", chain);
+	public RoleEndpoint(MeshAuthChain chain, RoleCrudHandlerImpl crudHandler, LocalConfigApi localConfigApi, Database db, MeshOptions options) {
+		super("roles", chain, localConfigApi, db, options);
 		this.crudHandler = crudHandler;
 	}
 
@@ -56,6 +59,7 @@ public class RoleEndpoint extends AbstractInternalEndpoint {
 		addDeleteHandler();
 
 		addPermissionHandler();
+		addRolePermissionHandler("roleUuid", ROLE_CLIENT_UUID, "role", crudHandler, false);
 	}
 
 	private void addPermissionHandler() {
@@ -77,7 +81,7 @@ public class RoleEndpoint extends AbstractInternalEndpoint {
 			String roleUuid = ac.getParameter("param0");
 			String pathToElement = ac.getParameter("param1");
 			crudHandler.handlePermissionUpdate(ac, roleUuid, pathToElement);
-		});
+		}, isOrderedBlockingHandlers());
 
 		InternalEndpointRoute permissionGetEndpoint = createRoute();
 		permissionGetEndpoint.pathRegex("\\/([^\\/]*)\\/permissions\\/(.*)");
@@ -109,7 +113,7 @@ public class RoleEndpoint extends AbstractInternalEndpoint {
 			InternalActionContext ac = wrap(rc);
 			String uuid = ac.getParameter("roleUuid");
 			crudHandler.handleDelete(ac, uuid);
-		});
+		}, isOrderedBlockingHandlers());
 	}
 
 	private void addUpdateHandler() {
@@ -120,13 +124,13 @@ public class RoleEndpoint extends AbstractInternalEndpoint {
 		endpoint.method(POST);
 		endpoint.consumes(APPLICATION_JSON);
 		endpoint.exampleRequest(roleExamples.getRoleUpdateRequest("New role name"));
-		endpoint.exampleResponse(OK, roleExamples.getRoleResponse1("New role name"), "Updated role.");
+		endpoint.exampleResponse(OK, roleExamples.getRoleResponse1("New role name"), "Updated or new role.");
 		endpoint.events(ROLE_UPDATED, ROLE_CREATED);
 		endpoint.blockingHandler(rc -> {
 			InternalActionContext ac = wrap(rc);
 			String uuid = ac.getParameter("roleUuid");
 			crudHandler.handleUpdate(ac, uuid);
-		});
+		}, isOrderedBlockingHandlers());
 	}
 
 	private void addReadHandler() {
@@ -174,6 +178,6 @@ public class RoleEndpoint extends AbstractInternalEndpoint {
 		endpoint.blockingHandler(rc -> {
 			InternalActionContext ac = wrap(rc);
 			crudHandler.handleCreate(ac);
-		});
+		}, isOrderedBlockingHandlers());
 	}
 }

@@ -8,6 +8,8 @@ import static org.apache.commons.lang3.StringUtils.isEmpty;
 import javax.inject.Inject;
 import javax.inject.Singleton;
 
+import org.apache.commons.lang3.NotImplementedException;
+
 import com.gentics.mesh.auth.handler.MeshJWTAuthHandler;
 import com.gentics.mesh.auth.provider.MeshJWTAuthProvider;
 import com.gentics.mesh.context.InternalActionContext;
@@ -19,11 +21,11 @@ import com.gentics.mesh.core.data.user.MeshAuthUser;
 import com.gentics.mesh.core.db.Database;
 import com.gentics.mesh.parameter.UserParameters;
 
-import io.vertx.core.AsyncResult;
-import io.vertx.core.Handler;
-import io.vertx.core.json.JsonObject;
+import io.vertx.core.Future;
+import io.vertx.ext.auth.User;
 import io.vertx.ext.web.RoutingContext;
-import io.vertx.ext.web.handler.impl.AuthHandlerImpl;
+import io.vertx.ext.web.handler.impl.AuthenticationHandlerImpl;
+import io.vertx.ext.web.impl.UserContextInternal;
 
 /**
  * The user token authentication handler grants access to routes by validating the provides token query parameter value.
@@ -33,7 +35,7 @@ import io.vertx.ext.web.handler.impl.AuthHandlerImpl;
  * this handler fails the {@link MeshJWTAuthHandler} should try to extract the JWT token from the cookie and load the correct user.
  */
 @Singleton
-public class UserTokenAuthHandler extends AuthHandlerImpl {
+public class UserTokenAuthHandler extends AuthenticationHandlerImpl<MeshJWTAuthProvider> {
 
 	public static final int DEFAULT_MAX_TOKEN_AGE_IN_MINS = 30;
 	private Database db;
@@ -44,9 +46,10 @@ public class UserTokenAuthHandler extends AuthHandlerImpl {
 		this.db = db;
 	}
 
+
 	@Override
-	public void parseCredentials(RoutingContext context, Handler<AsyncResult<JsonObject>> handler) {
-		// Not needed
+	public Future<User> authenticate(RoutingContext context) {
+		throw new NotImplementedException();
 	}
 
 	@Override
@@ -82,7 +85,7 @@ public class UserTokenAuthHandler extends AuthHandlerImpl {
 			if (lastEditor == null) {
 				throw error(UNAUTHORIZED, "user_error_provided_token_invalid");
 			}
-			rc.setUser(lastEditor);
+			((UserContextInternal) rc.userContext()).setUser(lastEditor);
 
 			// Token found and validated. Lets continue
 			rc.next();
@@ -92,5 +95,4 @@ public class UserTokenAuthHandler extends AuthHandlerImpl {
 			rc.next();
 		}
 	}
-
 }

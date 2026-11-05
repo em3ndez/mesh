@@ -78,8 +78,8 @@ import io.vertx.core.Vertx;
 import io.vertx.core.eventbus.EventBus;
 import io.vertx.core.eventbus.Message;
 import io.vertx.core.json.JsonObject;
-import io.vertx.core.logging.Logger;
-import io.vertx.core.logging.LoggerFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * The implementation of an {@link MeshPluginManager}.
@@ -128,13 +128,8 @@ public class MeshPluginManagerImpl extends AbstractPluginManager implements Mesh
 			EventBus eb = vertx.get().eventBus();
 
 			eb.consumer(CLUSTER_DATABASE_CHANGE_STATUS.address, (Message<JsonObject> handler) -> {
-				// at least one database in the cluster changed its status
-				if (clusterManager != null) {
-					// we are interested in the cluster-wide locking of storages
-					handleDatabaseAvailability(!clusterManager.isClusterTopologyLocked());
-				}
 			});
-			log.info("Distributed DB status event listener registered.");
+			log.trace("Distributed DB status event listener registered.");
 		}
 	}
 
@@ -146,7 +141,7 @@ public class MeshPluginManagerImpl extends AbstractPluginManager implements Mesh
 		if (available) {
 			boolean wasAvailable = dbReady.getAndSet(true);
 			if (!wasAvailable) {
-				log.info("Database changed to be available. Plugin stati are {}", pluginStatusMap);
+				log.info("Database changed to be available. Plugin statuses are {}", pluginStatusMap);
 
 				List<String> failedPluginIds = pluginStatusMap.entrySet().stream().filter(entry -> entry.getValue() == PluginStatus.FAILED_RETRY)
 						.map(entry -> entry.getKey()).collect(Collectors.toList());
@@ -158,7 +153,7 @@ public class MeshPluginManagerImpl extends AbstractPluginManager implements Mesh
 		} else {
 			boolean wasAvailable = dbReady.getAndSet(false);
 			if (wasAvailable) {
-				log.info("Database changed to be unavailable. Plugin stati are {}", pluginStatusMap);
+				log.info("Database changed to be unavailable. Plugin statuses are {}", pluginStatusMap);
 			}
 		}
 	}
@@ -181,7 +176,7 @@ public class MeshPluginManagerImpl extends AbstractPluginManager implements Mesh
 			base = "plugins";
 		}
 		log.trace("Using base dir {" + base + "}");
-		pluginsRoot = Paths.get(base);
+		pluginsRoots.add(Paths.get(base));
 		// Re-create the plugin repo since the root dir might have changed
 		pluginRepository = createPluginRepository();
 		pluginRegistry.start();
@@ -211,9 +206,11 @@ public class MeshPluginManagerImpl extends AbstractPluginManager implements Mesh
 		for (PluginWrapper pluginWrapper : resolvedPlugins) {
 			PluginState pluginState = pluginWrapper.getPluginState();
 			if ((PluginState.DISABLED != pluginState) && (PluginState.STARTED != pluginState)) {
+				Plugin plugin = null;
+
 				try {
 					log.info("Start plugin '{}'", getPluginLabel(pluginWrapper.getDescriptor()));
-					Plugin plugin = pluginWrapper.getPlugin();
+					plugin = pluginWrapper.getPlugin();
 					plugin.start();
 					// Set state for PF4J
 					pluginWrapper.setPluginState(PluginState.STARTED);
@@ -227,6 +224,13 @@ public class MeshPluginManagerImpl extends AbstractPluginManager implements Mesh
 
 					firePluginStateEvent(new PluginStateEvent(this, pluginWrapper, pluginState));
 				} catch (Throwable e) {
+					if (plugin instanceof MeshPlugin) {
+						setPluginFailed(((MeshPlugin) plugin).id());
+						// We still need to add the plugin to the list of started plugins, or else the monitoring will
+						// not be aware of the failed plugin start.
+						startedPlugins.add(pluginWrapper);
+					}
+
 					log.error("Error while starting plugins " + e.getMessage(), e);
 				}
 			}
@@ -240,8 +244,17 @@ public class MeshPluginManagerImpl extends AbstractPluginManager implements Mesh
 
 		// 1. Initial checks
 		String name = path.getFileName().toString();
+
 		if (Files.notExists(path)) {
 			return rxError(BAD_REQUEST, "admin_plugin_error_plugin_deployment_failed", name);
+		}
+
+		try {
+			if (!path.toRealPath().startsWith(getPluginsRoot().toRealPath())) {
+				return rxError(BAD_REQUEST, "admin_plugin_error_plugin_deployment_failed", name);
+			}
+		} catch (IOException e) {
+			return rxError(INTERNAL_SERVER_ERROR, "admin_plugin_error_plugin_loading_failed", name);
 		}
 
 		// 2. Load plugin into p4fj
@@ -581,8 +594,7 @@ public class MeshPluginManagerImpl extends AbstractPluginManager implements Mesh
 			op.timeout(timeout, TimeUnit.SECONDS).blockingAwait();
 		} catch (Throwable t) {
 			if (t instanceof TimeoutException) {
-				log.error("The registration of plugin {" + id + "} did not complete within {" + timeout
-					+ "} seconds. Unloading plugin.");
+				log.error("The registration of plugin {" + id + "} did not complete within {" + timeout	+ "} seconds. Unloading plugin.");
 				throw error(INTERNAL_SERVER_ERROR, "admin_plugin_error_timeout", id);
 			}
 			throw t;
@@ -629,7 +641,7 @@ public class MeshPluginManagerImpl extends AbstractPluginManager implements Mesh
 		try {
 			pluginPath = FileUtils.expandIfZip(pluginPath);
 		} catch (Exception e) {
-			log.warn("Failed to unzip " + pluginPath, e);
+			log.error("Failed to unzip " + pluginPath, e);
 			return null;
 		}
 

@@ -5,7 +5,7 @@ import java.util.function.Predicate;
 import javax.inject.Inject;
 import javax.inject.Singleton;
 
-import com.gentics.mesh.context.BulkActionContext;
+import com.gentics.graphqlfilter.filter.operation.FilterOperation;
 import com.gentics.mesh.context.InternalActionContext;
 import com.gentics.mesh.core.action.DAOActionContext;
 import com.gentics.mesh.core.action.MicroschemaDAOActions;
@@ -57,9 +57,7 @@ public class MicroschemaDAOActionsImpl implements MicroschemaDAOActions {
 	@Override
 	public Page<? extends HibMicroschema> loadAll(DAOActionContext ctx, PagingParameters pagingInfo,
 		Predicate<HibMicroschema> extraFilter) {
-		return ctx.tx().microschemaDao().findAll(ctx.ac(), pagingInfo, schema -> {
-			return extraFilter.test(schema);
-		});
+		return ctx.tx().microschemaDao().findAll(ctx.ac(), pagingInfo, extraFilter);
 	}
 
 	@Override
@@ -74,8 +72,8 @@ public class MicroschemaDAOActionsImpl implements MicroschemaDAOActions {
 	}
 
 	@Override
-	public void delete(Tx tx, HibMicroschema element, BulkActionContext bac) {
-		tx.microschemaDao().delete(element, bac);
+	public void delete(Tx tx, HibMicroschema element) {
+		tx.microschemaDao().delete(element);
 	}
 
 	@Override
@@ -93,4 +91,8 @@ public class MicroschemaDAOActionsImpl implements MicroschemaDAOActions {
 		return element.getETag(ac);
 	}
 
+	@Override
+	public Page<? extends HibMicroschema> loadAll(DAOActionContext ctx, PagingParameters pagingInfo, FilterOperation<?> extraFilter) {
+		return ctx.tx().microschemaDao().findAll(ctx.ac(), pagingInfo, extraFilter);
+	}
 }

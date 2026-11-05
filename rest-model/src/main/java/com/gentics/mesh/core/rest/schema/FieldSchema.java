@@ -1,10 +1,12 @@
 package com.gentics.mesh.core.rest.schema;
 
 import java.util.Map;
+import java.util.Optional;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonPropertyDescription;
+import com.gentics.mesh.core.rest.common.RestModel;
 import com.gentics.mesh.core.rest.schema.change.impl.SchemaChangeModel;
 import com.gentics.mesh.etc.config.search.ElasticSearchOptions;
 import com.gentics.mesh.etc.config.search.MappingMode;
@@ -15,7 +17,7 @@ import io.vertx.core.json.JsonObject;
  * A field schema is a field within a schema. In contradiction to node fields a field schema is the blueprint of a field and will not store any data. Instead it
  * only defines a field within a schema.
  */
-public interface FieldSchema {
+public interface FieldSchema extends RestModel {
 
 	/**
 	 * Return the type of the field schema.
@@ -76,6 +78,21 @@ public interface FieldSchema {
 	 * @return Fluent API
 	 */
 	FieldSchema setRequired(boolean isRequired);
+
+	/**
+	 * Return the 'excluded from indexing' flag of the field schema.
+	 * 
+	 * @return
+	 */
+	boolean isNoIndex();
+
+	/**
+	 * Set the 'excluded from indexing' flag.
+	 * 
+	 * @param isNoIndex
+	 * @return Fluent API
+	 */
+	FieldSchema setNoIndex(boolean isNoIndex);
 
 	/**
 	 * Compare the field schema with the given field schema.
@@ -140,7 +157,15 @@ public interface FieldSchema {
 	 */
 	@JsonIgnore
 	default boolean isMappingRequired(ElasticSearchOptions options) {
+		if (isNoIndex()) {
+			return false;
+		}
 		MappingMode mode = options.getMappingMode();
 		return mode == MappingMode.DYNAMIC || mode == MappingMode.STRICT && getElasticsearch() != null;
+	}
+
+	@JsonIgnore
+	default Optional<ListFieldSchema> maybeGetListField() {
+		return Optional.empty();
 	}
 }

@@ -11,9 +11,10 @@ import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
+import java.util.Optional;
 
-import io.vertx.core.logging.Logger;
-import io.vertx.core.logging.LoggerFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Utility which contains date and time related methods.
@@ -22,11 +23,11 @@ public final class DateUtils {
 
 	private static final Logger log = LoggerFactory.getLogger(DateUtils.class);
 
-	static ZoneOffset zoneOffset;
+	public static final ZoneOffset ZONE_OFFSET;
 
 	static {
 		OffsetDateTime odt = OffsetDateTime.now(ZoneId.systemDefault());
-		zoneOffset = odt.getOffset();
+		ZONE_OFFSET = odt.getOffset();
 	}
 
 	/**
@@ -92,7 +93,7 @@ public final class DateUtils {
 			}
 			try {
 				// We also support date strings which do not include an offset. We apply the system offset in those cases.
-				Long date = LocalDateTime.parse(dateString).toInstant(zoneOffset).toEpochMilli();
+				Long date = LocalDateTime.parse(dateString).toInstant(ZONE_OFFSET).toEpochMilli();
 				return date;
 			} catch (DateTimeParseException e2) {
 				if (log.isDebugEnabled()) {
@@ -118,4 +119,17 @@ public final class DateUtils {
 		return date != null;
 	}
 
+	/**
+	 * Transform an instant into its epoch millis. Nulls are welcomed too.
+	 * 
+	 * @param instant
+	 * @param zeroIsValid 0 millis is expected valid epoch start date, if true, false otherwise.
+	 * @return
+	 */
+	public static Long instantToMillis(Instant instant, boolean zeroIsValid) {
+		return Optional.ofNullable(instant)
+				.map(Instant::toEpochMilli)
+				.filter(millis -> millis == null || millis != 0 || zeroIsValid)
+				.orElse(null);
+	}
 }

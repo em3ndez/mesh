@@ -18,6 +18,7 @@ import static io.netty.handler.codec.http.HttpResponseStatus.BAD_REQUEST;
 import static io.netty.handler.codec.http.HttpResponseStatus.CONFLICT;
 import static io.netty.handler.codec.http.HttpResponseStatus.FORBIDDEN;
 import static io.netty.handler.codec.http.HttpResponseStatus.INTERNAL_SERVER_ERROR;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
@@ -26,7 +27,9 @@ import static org.junit.Assert.assertTrue;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import org.junit.Ignore;
 import org.junit.Test;
@@ -39,16 +42,20 @@ import com.gentics.mesh.core.data.dao.UserDao;
 import com.gentics.mesh.core.data.perm.InternalPermission;
 import com.gentics.mesh.core.data.role.HibRole;
 import com.gentics.mesh.core.db.Tx;
+import com.gentics.mesh.core.rest.SortOrder;
 import com.gentics.mesh.core.rest.common.GenericMessageResponse;
 import com.gentics.mesh.core.rest.common.Permission;
-import com.gentics.mesh.core.rest.error.GenericRestException;
 import com.gentics.mesh.core.rest.event.impl.MeshElementEventModelImpl;
+import com.gentics.mesh.core.rest.group.GroupCreateRequest;
+import com.gentics.mesh.core.rest.group.GroupResponse;
 import com.gentics.mesh.core.rest.role.RoleCreateRequest;
 import com.gentics.mesh.core.rest.role.RoleListResponse;
 import com.gentics.mesh.core.rest.role.RoleResponse;
 import com.gentics.mesh.core.rest.role.RoleUpdateRequest;
 import com.gentics.mesh.parameter.impl.PagingParametersImpl;
 import com.gentics.mesh.parameter.impl.RolePermissionParametersImpl;
+import com.gentics.mesh.parameter.impl.SortingParametersImpl;
+import com.gentics.mesh.rest.client.MeshRestClientMessageException;
 import com.gentics.mesh.test.MeshTestSetting;
 import com.gentics.mesh.test.context.AbstractMeshTest;
 import com.gentics.mesh.test.definition.BasicRestTestcases;
@@ -58,6 +65,32 @@ import io.reactivex.Single;
 
 @MeshTestSetting(elasticsearch = TRACKING, testSize = PROJECT, startServer = true)
 public class RoleEndpointTest extends AbstractMeshTest implements BasicRestTestcases {
+
+	@Test
+	public void testOneRoleTwoGroups() {
+		Set<GroupResponse> groups = IntStream.range(0, 2).mapToObj(i -> {
+			GroupCreateRequest request = new GroupCreateRequest();
+			request.setName("group" + i + "forrole");
+			return call(() -> client().createGroup(request));
+		}).collect(Collectors.toSet());
+
+		RoleCreateRequest request = new RoleCreateRequest();
+		request.setName("one_role_two_groups");
+
+		expect(ROLE_CREATED).match(1, MeshElementEventModelImpl.class, event -> {
+			assertThat(event).hasName("one_role_two_groups").uuidNotNull();
+		}).total(1);
+		expect(ROLE_UPDATED).total(0);
+
+		RoleResponse restRole = call(() -> client().createRole(request));
+		awaitEvents();
+		waitForSearchIdleEvent();
+
+		groups.stream().forEach(group -> call(() -> client().addRoleToGroup(group.getUuid(), restRole.getUuid())));
+
+		RoleListResponse roles = adminCall(() -> client().findRoles());
+		assertThat(roles.getData().stream().filter(role -> "one_role_two_groups".equals(role.getName()))).hasSize(1);
+	}
 
 	@Test
 	@Override
@@ -331,6 +364,35 @@ public class RoleEndpointTest extends AbstractMeshTest implements BasicRestTestc
 		assertEquals(nRoles + initialRolesCount, response.getMetainfo().getTotalCount());
 		assertEquals(25, response.getMetainfo().getPerPage().longValue());
 
+		verifySorting(param -> call(() -> client().findRoles(param)), RoleResponse::getName, "name", "List of role names");
+	}
+
+	@Test
+	@Override
+	public void testReadPermittedSorted() throws Exception {
+		for (int i = 0; i < 10; i++) {
+			final String name = "test12345_" + i;
+			RoleCreateRequest request = new RoleCreateRequest();
+			request.setName(name);
+			RoleResponse response = call(() -> client().createRole(request));
+			if ((i % 2) == 0) {
+				tx(tx -> {
+					tx.roleDao().revokePermissions(role(), tx.roleDao().findByUuid(response.getUuid()), READ_PERM);
+				});
+			}
+		}
+		RoleListResponse list = call(() -> client().findRoles(new SortingParametersImpl("name", SortOrder.DESCENDING)));
+		assertEquals("Total data size should be 8", 8, list.getData().size());
+		assertThat(list.getData()).isSortedAccordingTo((fa, fb) -> getTestContext().getSortComparator().reversed().compare(
+				fa != null ? fa.getName() : null,
+				fb != null ? fb.getName() : null));
+	}
+
+	@Test
+	@Override
+	public void testReadPermittedSortedWrongField() throws Exception {
+		MeshRestClientMessageException error = call(() -> client().findRoles(new SortingParametersImpl("existiertleidernicht", SortOrder.DESCENDING)), BAD_REQUEST);
+		assertThat(error.getResponseMessage().getMessage()).as("Error message").startsWith("The following column names are not allowed for sorting: [existiertleidernicht].");
 	}
 
 	@Test
@@ -402,16 +464,6 @@ public class RoleEndpointTest extends AbstractMeshTest implements BasicRestTestc
 	}
 
 	@Test
-	@Override
-	public void testUpdateWithBogusUuid() throws GenericRestException, Exception {
-		RoleUpdateRequest request = new RoleUpdateRequest();
-		request.setName("renamed role");
-
-		call(() -> client().updateRole("bogus", request), BAD_REQUEST, "error_illegal_uuid", "bogus");
-
-	}
-
-	@Test
 	public void testUpdateOwnRole() throws JsonGenerationException, JsonMappingException, IOException, Exception {
 		try (Tx tx = tx()) {
 			RoleDao roleDao = tx.roleDao();
@@ -456,7 +508,7 @@ public class RoleEndpointTest extends AbstractMeshTest implements BasicRestTestc
 			assertThat(event).hasName("extra role").hasUuid(extraRoleUuid);
 		});
 
-		trackingSearchProvider().clear().blockingAwait();
+		waitAndClearSearchIdleEvents();
 		call(() -> client().deleteRole(extraRoleUuid));
 
 		awaitEvents();

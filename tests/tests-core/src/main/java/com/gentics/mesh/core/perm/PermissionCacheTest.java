@@ -2,19 +2,21 @@ package com.gentics.mesh.core.perm;
 
 import static com.gentics.mesh.mock.Mocks.getMockedInternalActionContext;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.Assert.assertEquals;
 
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.HashSet;
+import java.util.EnumSet;
+import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Set;
+import java.util.UUID;
 
 import org.junit.Before;
 import org.junit.Test;
 
 import com.gentics.mesh.context.InternalActionContext;
-import com.gentics.mesh.context.impl.DummyBulkActionContext;
-import com.gentics.mesh.context.impl.DummyEventQueueBatch;
+import com.gentics.mesh.core.data.HibBaseElement;
 import com.gentics.mesh.core.data.group.HibGroup;
+import com.gentics.mesh.core.data.node.HibNode;
 import com.gentics.mesh.core.data.perm.InternalPermission;
 import com.gentics.mesh.core.data.project.HibProject;
 import com.gentics.mesh.core.data.role.HibRole;
@@ -23,6 +25,8 @@ import com.gentics.mesh.core.rest.user.UserUpdateRequest;
 import com.gentics.mesh.test.MeshTestSetting;
 import com.gentics.mesh.test.TestSize;
 import com.gentics.mesh.test.context.AbstractMeshTest;
+import com.gentics.mesh.test.context.DummyEventQueueBatch;
+import com.gentics.mesh.util.UUIDUtil;
 
 /**
  * Test cases for usage and clearing of PermissionCache
@@ -48,8 +52,7 @@ public class PermissionCacheTest extends AbstractMeshTest {
 		db().tx(tx -> {
 			HibProject project = tx.projectDao().findByUuid(projectUuid());
 			HibRole role = tx.roleDao().findByUuid(roleUuid());
-			tx.roleDao().applyPermissions(project, new DummyEventQueueBatch(), role, false, Collections.emptySet(),
-					new HashSet<>(Arrays.asList(InternalPermission.DELETE_PERM, InternalPermission.UPDATE_PERM)));
+			tx.roleDao().revokePermissions(role, project, InternalPermission.DELETE_PERM, InternalPermission.UPDATE_PERM);
 		});
 
 		assertPermissions("revoking permissions", InternalPermission.CREATE_PERM, InternalPermission.READ_PERM);
@@ -58,8 +61,7 @@ public class PermissionCacheTest extends AbstractMeshTest {
 		db().tx(tx -> {
 			HibProject project = tx.projectDao().findByUuid(projectUuid());
 			HibRole role = tx.roleDao().findByUuid(roleUuid());
-			tx.roleDao().applyPermissions(project, new DummyEventQueueBatch(), role, false,
-					new HashSet<>(Arrays.asList(InternalPermission.UPDATE_PERM)), Collections.emptySet());
+			tx.roleDao().grantPermissions(role, project, InternalPermission.UPDATE_PERM);
 		});
 
 		assertPermissions("granting permissions", InternalPermission.CREATE_PERM, InternalPermission.READ_PERM,
@@ -124,7 +126,7 @@ public class PermissionCacheTest extends AbstractMeshTest {
 		// delete the role
 		db().tx(tx -> {
 			HibRole role = tx.roleDao().findByUuid(roleUuid());
-			tx.roleDao().delete(role, new DummyBulkActionContext());
+			tx.roleDao().delete(role);
 		});
 
 		assertPermissions("deleting role");
@@ -138,7 +140,7 @@ public class PermissionCacheTest extends AbstractMeshTest {
 		// delete the group
 		db().tx(tx -> {
 			HibGroup group = tx.groupDao().findByUuid(groupUuid());
-			tx.groupDao().delete(group, new DummyBulkActionContext());
+			tx.groupDao().delete(group);
 		});
 
 		assertPermissions("deleting group");
@@ -155,7 +157,7 @@ public class PermissionCacheTest extends AbstractMeshTest {
 		assertThat(getPermissionCacheSize()).as("Cache size before deleting user").isEqualTo(1);
 		db().tx(tx -> {
 			HibUser user = tx.userDao().findByUuid(userUuid);
-			tx.userDao().delete(user, new DummyBulkActionContext());
+			tx.userDao().delete(user);
 		});
 		assertThat(getPermissionCacheSize()).as("Cache size after deleting user").isEqualTo(0);
 	}
@@ -169,9 +171,8 @@ public class PermissionCacheTest extends AbstractMeshTest {
 		db().tx(tx -> {
 			HibProject project = tx.projectDao().findByUuid(projectUuid());
 			HibRole role = tx.roleDao().findByUuid(roleUuid());
-			tx.roleDao().applyPermissions(project, new DummyEventQueueBatch(), role, false, Collections.emptySet(),
-					new HashSet<>(Arrays.asList(InternalPermission.CREATE_PERM, InternalPermission.READ_PERM,
-							InternalPermission.UPDATE_PERM, InternalPermission.DELETE_PERM)));
+			tx.roleDao().revokePermissions(role, project, InternalPermission.CREATE_PERM, InternalPermission.READ_PERM,
+					InternalPermission.UPDATE_PERM, InternalPermission.DELETE_PERM);
 		});
 
 		revokeAdmin();
@@ -202,9 +203,8 @@ public class PermissionCacheTest extends AbstractMeshTest {
 		db().tx(tx -> {
 			HibProject project = tx.projectDao().findByUuid(projectUuid());
 			HibRole role = tx.roleDao().findByUuid(roleUuid());
-			tx.roleDao().applyPermissions(project, new DummyEventQueueBatch(), role, false, Collections.emptySet(),
-					new HashSet<>(Arrays.asList(InternalPermission.CREATE_PERM, InternalPermission.READ_PERM,
-							InternalPermission.UPDATE_PERM, InternalPermission.DELETE_PERM)));
+			tx.roleDao().revokePermissions(role, project, InternalPermission.CREATE_PERM, InternalPermission.READ_PERM,
+					InternalPermission.UPDATE_PERM, InternalPermission.DELETE_PERM);
 		});
 		grantAdmin();
 		db().tx(tx -> {
@@ -223,6 +223,118 @@ public class PermissionCacheTest extends AbstractMeshTest {
 			tx.userDao().update(user, ac, new DummyEventQueueBatch());
 		});
 		assertPermissions("revoking admin flag");
+	}
+
+	/**
+	 * Test that mutations of permission entries fetched from the cache will not change the cached entry itself
+	 */
+	@Test
+	public void testMutateCachedEntry() {
+		UUID userId = UUIDUtil.toJavaUuid(UUIDUtil.randomUUID());
+		UUID elementId = UUIDUtil.toJavaUuid(UUIDUtil.randomUUID());
+
+		// store permission in the cache
+		db().tx(tx -> {
+			EnumSet<InternalPermission> cached = EnumSet.of(InternalPermission.CREATE_PERM, InternalPermission.UPDATE_PERM);
+			tx.permissionCache().store(userId, cached, elementId);
+		});
+
+		// get stored permission and mutate
+		EnumSet<InternalPermission> cached = db().tx(tx -> {
+			return tx.permissionCache().get(userId, elementId);
+		});
+		assertThat(cached).as("Cached permissions").isNotNull().containsOnly(InternalPermission.CREATE_PERM, InternalPermission.UPDATE_PERM);
+		cached.add(InternalPermission.READ_PERM);
+
+		// get again
+		cached =  db().tx(tx -> {
+			return tx.permissionCache().get(userId, elementId);
+		});
+		assertThat(cached).as("Cached permissions").isNotNull().containsOnly(InternalPermission.CREATE_PERM, InternalPermission.UPDATE_PERM);
+	}
+
+	@Test
+	public void testPlainUserRandomPermissions() {
+		String plainUserUuid = tx(tx -> { 
+			HibUser user = tx.userDao().create("user-" + System.currentTimeMillis(), user()); 
+			tx.userDao().addGroup(user, group());
+			tx.success();
+			return user.getUuid();
+		});
+		testPermissionsForUser(plainUserUuid, false, false);
+		testPermissionsForUser(plainUserUuid, true, false);
+		testPermissionsForUser(plainUserUuid, false, true);
+	}
+
+	@Test
+	public void testAdminUserRandomPermissions() {
+		String adminUserUuid = tx(tx -> { 
+			HibUser user = tx.userDao().create("admin-" + System.currentTimeMillis(), user());
+			user.setAdmin(true);
+			tx.userDao().addGroup(user, group());
+			tx.success();
+			return user.getUuid();
+		});
+		testPermissionsForUser(adminUserUuid, false, false);
+		testPermissionsForUser(adminUserUuid, true, false);
+		testPermissionsForUser(adminUserUuid, false, true);
+	}
+
+	/**
+	 * Test permissions set on a given user. If both grant+revoke arguments are unset, fill the permissions randomly.
+	 * 
+	 * @param userUuid
+	 * @param grantAll
+	 * @param revokeAll
+	 */
+	protected void testPermissionsForUser(String userUuid, boolean grantAll, boolean revokeAll) {
+		String nodeUuid = tx(tx -> {
+			HibNode node = tx.nodeDao().create(project().getBaseNode(), user(), schemaContainer("folder").getLatestVersion(), project());
+			return node.getUuid();
+		});
+		Map<HibBaseElement, EnumSet<InternalPermission>> elements = tx(tx -> {
+			HibUser user = tx.userDao().findByUuid(userUuid);
+			HibRole role = tx.userDao().getRoles(user).get(0);
+
+			// A set of instances of different base types to test the perm cache upon
+			Map<HibBaseElement, EnumSet<InternalPermission>> elements1 = Map.of(
+					project(), grantAll ? EnumSet.allOf(InternalPermission.class) : EnumSet.noneOf(InternalPermission.class),
+					schemaContainer("folder"), grantAll ? EnumSet.allOf(InternalPermission.class) : EnumSet.noneOf(InternalPermission.class),
+					user(), grantAll ? EnumSet.allOf(InternalPermission.class) : EnumSet.noneOf(InternalPermission.class),
+					tx.nodeDao().findByUuidGlobal(nodeUuid), grantAll ? EnumSet.allOf(InternalPermission.class) : EnumSet.noneOf(InternalPermission.class)
+			);
+			for (HibBaseElement element : elements1.keySet()) {
+				if (!grantAll && !revokeAll) {
+					for (InternalPermission ip : EnumSet.allOf(InternalPermission.class)) {
+						boolean grant = (System.nanoTime() % 2) > 0;
+						if (grant) {
+							tx.roleDao().grantPermissions(role, element, ip);
+							elements1.get(element).add(ip);
+						} else {
+							tx.roleDao().revokePermissions(role, element, ip);
+							elements1.get(element).remove(ip);
+						}
+					}
+				}
+				tx.permissionCache().store(user.getId(), elements1.get(element), element.getId());
+			}
+			tx.success();
+			return elements1;
+		});
+
+		tx(tx -> {
+			HibUser user = tx.userDao().findByUuid(userUuid);
+			for (Entry<HibBaseElement, EnumSet<InternalPermission>> ep : elements.entrySet()) {
+				for (InternalPermission ip : EnumSet.allOf(InternalPermission.class)) {
+					boolean actual = tx.userDao().hasPermissionForId(user, ep.getKey().getId(), ip);
+					boolean expected = ep.getValue().contains(ip) || user.isAdmin();
+					if (!expected && InternalPermission.READ_PUBLISHED_PERM.equals(ip)) {
+						expected = ep.getValue().contains(InternalPermission.READ_PERM);
+					}
+					assertEquals("Mismatch expected " + ip + " for " + user.getUsername() + " on " + ep.getKey().getClass().getSimpleName() + ", of " + ep.getValue(), actual, expected);
+				}
+			}
+		});
 	}
 
 	/**

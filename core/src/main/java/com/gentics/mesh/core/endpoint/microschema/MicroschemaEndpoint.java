@@ -19,27 +19,30 @@ import javax.inject.Inject;
 
 import org.apache.commons.lang3.StringUtils;
 
-import com.gentics.mesh.auth.MeshAuthChainImpl;
+import com.gentics.mesh.auth.MeshAuthChain;
 import com.gentics.mesh.context.InternalActionContext;
+import com.gentics.mesh.core.db.Database;
+import com.gentics.mesh.core.endpoint.RolePermissionHandlingEndpoint;
+import com.gentics.mesh.core.endpoint.admin.LocalConfigApi;
+import com.gentics.mesh.etc.config.MeshOptions;
 import com.gentics.mesh.parameter.impl.PagingParametersImpl;
 import com.gentics.mesh.parameter.impl.VersioningParametersImpl;
 import com.gentics.mesh.rest.InternalEndpointRoute;
-import com.gentics.mesh.router.route.AbstractInternalEndpoint;
 
 /**
  * Endpoint for /api/v1/microschemas
  */
-public class MicroschemaEndpoint extends AbstractInternalEndpoint {
+public class MicroschemaEndpoint extends RolePermissionHandlingEndpoint {
 
 	private MicroschemaCrudHandler crudHandler;
 
 	public MicroschemaEndpoint() {
-		super("microschemas", null);
+		super("microschemas", null, null, null, null);
 	}
 
 	@Inject
-	public MicroschemaEndpoint(MeshAuthChainImpl chain, MicroschemaCrudHandler crudHandler) {
-		super("microschemas", chain);
+	public MicroschemaEndpoint(MeshAuthChain chain, MicroschemaCrudHandler crudHandler, LocalConfigApi localConfigApi, Database db, MeshOptions options) {
+		super("microschemas", chain, localConfigApi, db, options);
 		this.crudHandler = crudHandler;
 	}
 
@@ -59,6 +62,7 @@ public class MicroschemaEndpoint extends AbstractInternalEndpoint {
 		addReadHandlers();
 		addUpdateHandler();
 		addDeleteHandler();
+		addRolePermissionHandler("microschemaUuid", MICROSCHEMA_UUID, "microschema", crudHandler, false);
 	}
 
 	private void addDiffHandler() {
@@ -108,7 +112,7 @@ public class MicroschemaEndpoint extends AbstractInternalEndpoint {
 			InternalActionContext ac = wrap(rc);
 			String schemaUuid = ac.getParameter("microschemaUuid");
 			crudHandler.handleApplySchemaChanges(ac, schemaUuid);
-		});
+		}, isOrderedBlockingHandlers());
 	}
 
 	private void addReadHandlers() {
@@ -154,7 +158,7 @@ public class MicroschemaEndpoint extends AbstractInternalEndpoint {
 			InternalActionContext ac = wrap(rc);
 			String uuid = ac.getParameter("microschemaUuid");
 			crudHandler.handleDelete(ac, uuid);
-		});
+		}, isOrderedBlockingHandlers());
 	}
 
 	private void addUpdateHandler() {
@@ -167,13 +171,13 @@ public class MicroschemaEndpoint extends AbstractInternalEndpoint {
 		endpoint.exampleRequest(microschemaExamples.getGeolocationMicroschemaUpdateRequest());
 		// endpoint.exampleResponse(OK, microschemaExamples.getGeolocationMicroschemaResponse(), "Updated microschema.");
 		endpoint.exampleResponse(OK, miscExamples.createMessageResponse(), "Migration message.");
-		endpoint.description("Update the microschema with the given uuid.");
-		endpoint.events(MICROSCHEMA_UPDATED, MICROSCHEMA_MIGRATION_START, MICROSCHEMA_MIGRATION_FINISHED);
+		endpoint.description("Update or create the microschema with the given uuid.");
+		endpoint.events(MICROSCHEMA_UPDATED, MICROSCHEMA_CREATED, MICROSCHEMA_MIGRATION_START, MICROSCHEMA_MIGRATION_FINISHED);
 		endpoint.blockingHandler(rc -> {
 			InternalActionContext ac = wrap(rc);
 			String uuid = ac.getParameter("microschemaUuid");
 			crudHandler.handleUpdate(ac, uuid);
-		});
+		}, isOrderedBlockingHandlers());
 	}
 
 	private void addCreateHandler() {
@@ -187,7 +191,6 @@ public class MicroschemaEndpoint extends AbstractInternalEndpoint {
 		endpoint.events(MICROSCHEMA_CREATED);
 		endpoint.blockingHandler(rc -> {
 			crudHandler.handleCreate(wrap(rc));
-		});
+		}, isOrderedBlockingHandlers());
 	}
-
 }

@@ -27,8 +27,8 @@ import com.gentics.mesh.core.rest.event.migration.BranchMigrationMeshEventModel;
 import com.gentics.mesh.core.rest.event.node.BranchMigrationCause;
 import com.gentics.mesh.core.rest.job.JobStatus;
 import io.reactivex.Completable;
-import io.vertx.core.logging.Logger;
-import io.vertx.core.logging.LoggerFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * This class is responsible for starting a branch migration from a job
@@ -76,7 +76,7 @@ public class BranchJobProcessor implements SingleJobProcessor {
 				BranchMigrationContextImpl context = new BranchMigrationContextImpl();
 				context.setStatus(status);
 
-				tx.createBatch().add(createEvent(job, BRANCH_MIGRATION_START, STARTING)).dispatch();
+				tx.batch().add(createEvent(job, BRANCH_MIGRATION_START, STARTING)).dispatch();
 
 				HibBranch newBranch = hibJob.getBranch();
 				if (newBranch == null) {
@@ -136,7 +136,7 @@ public class BranchJobProcessor implements SingleJobProcessor {
 							// Job is nullable in the case of some unit tests
 							if (job != null) {
 								HibJob latest = jobDao.findByUuid(job.getUuid());
-								tx.createBatch().add(createEvent(latest, BRANCH_MIGRATION_FINISHED, FAILED)).dispatch();
+								tx.batch().add(createEvent(latest, BRANCH_MIGRATION_FINISHED, FAILED)).dispatch();
 							}
 							context.getStatus().error(err, "Error in branch migration.");							
 						});
@@ -154,7 +154,7 @@ public class BranchJobProcessor implements SingleJobProcessor {
 			persistingBranchDao.mergeIntoPersisted(branch.getProject(), branch);
 		});
 		db.tx(tx -> {
-			tx.createBatch().add(createEvent(job, BRANCH_MIGRATION_FINISHED, COMPLETED)).dispatch();
+			tx.batch().add(createEvent(job, BRANCH_MIGRATION_FINISHED, COMPLETED)).dispatch();
 		});
 	}
 }

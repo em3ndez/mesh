@@ -5,7 +5,7 @@ import java.util.function.Predicate;
 import javax.inject.Inject;
 import javax.inject.Singleton;
 
-import com.gentics.mesh.context.BulkActionContext;
+import com.gentics.graphqlfilter.filter.operation.FilterOperation;
 import com.gentics.mesh.context.InternalActionContext;
 import com.gentics.mesh.core.action.DAOActionContext;
 import com.gentics.mesh.core.action.RoleDAOActions;
@@ -55,9 +55,7 @@ public class RoleDAOActionsImpl implements RoleDAOActions {
 
 	@Override
 	public Page<? extends HibRole> loadAll(DAOActionContext ctx, PagingParameters pagingInfo, Predicate<HibRole> extraFilter) {
-		return ctx.tx().roleDao().findAll(ctx.ac(), pagingInfo, role -> {
-			return extraFilter.test(role);
-		});
+		return ctx.tx().roleDao().findAll(ctx.ac(), pagingInfo, extraFilter);
 	}
 
 	@Override
@@ -71,8 +69,8 @@ public class RoleDAOActionsImpl implements RoleDAOActions {
 	}
 
 	@Override
-	public void delete(Tx tx, HibRole role, BulkActionContext bac) {
-		tx.roleDao().delete(role, bac);
+	public void delete(Tx tx, HibRole role) {
+		tx.roleDao().delete(role);
 	}
 
 	@Override
@@ -90,4 +88,8 @@ public class RoleDAOActionsImpl implements RoleDAOActions {
 		return role.getETag(ac);
 	}
 
+	@Override
+	public Page<? extends HibRole> loadAll(DAOActionContext ctx, PagingParameters pagingInfo, FilterOperation<?> extraFilter) {
+		return ctx.tx().roleDao().findAll(ctx.ac(), pagingInfo, extraFilter);
+	}
 }

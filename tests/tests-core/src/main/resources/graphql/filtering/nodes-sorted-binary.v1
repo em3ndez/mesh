@@ -1,0 +1,32 @@
+{
+	nodes(filter: {
+	    schema: {is: folder}
+	  }
+	  sort: {
+	  	fields: {
+	  	  folder: {
+	  	  	binary: {
+	  	  	  fileName: DESCENDING
+	  	  	}
+	  	  }
+	  	}
+	  }
+	  ) {
+	    # [$.data.nodes.elements.length()=9]
+	    elements {
+	      uuid
+	      schema {
+	        name
+	      }
+	      fields {
+		    ... on folder {
+		      binary {
+				# [$.data.nodes.elements=<is-sorted-by:fields.binary.fileName:desc>]
+				fileName
+				}
+		    }
+		  }
+	    }
+	}
+}
+# [$.errors=<is-undefined>]

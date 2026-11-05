@@ -7,6 +7,7 @@ import static org.junit.Assert.assertTrue;
 import java.net.URI;
 
 import com.gentics.mesh.core.data.storage.s3.S3BinaryStorageImpl;
+import org.junit.After;
 import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.Test;
@@ -18,8 +19,8 @@ import com.gentics.mesh.test.MeshOptionsTypeUnawareContext;
 import com.gentics.mesh.test.docker.AWSContainer;
 
 import hu.akarnokd.rxjava2.interop.SingleInterop;
-import io.vertx.core.logging.Logger;
-import io.vertx.core.logging.LoggerFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
@@ -54,6 +55,11 @@ public class S3BinaryStorageTest implements MeshOptionsTypeUnawareContext {
         S3AsyncClient client = getClient();
         createBucket(BUCKET);
         s3BinaryStorage = new S3BinaryStorageImpl(meshOptions, client);
+    }
+
+    @After
+    public void tearDown() {
+        container.stop();
     }
 
     @AfterClass

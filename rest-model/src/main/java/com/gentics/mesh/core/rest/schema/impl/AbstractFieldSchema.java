@@ -5,6 +5,7 @@ import static com.gentics.mesh.core.rest.schema.change.impl.SchemaChangeModel.EL
 import static com.gentics.mesh.core.rest.schema.change.impl.SchemaChangeModel.LABEL_KEY;
 import static com.gentics.mesh.core.rest.schema.change.impl.SchemaChangeModel.LIST_TYPE_KEY;
 import static com.gentics.mesh.core.rest.schema.change.impl.SchemaChangeModel.NAME_KEY;
+import static com.gentics.mesh.core.rest.schema.change.impl.SchemaChangeModel.NO_INDEX_KEY;
 import static com.gentics.mesh.core.rest.schema.change.impl.SchemaChangeModel.REQUIRED_KEY;
 import static com.gentics.mesh.core.rest.schema.change.impl.SchemaChangeModel.TYPE_KEY;
 import static com.gentics.mesh.core.rest.schema.change.impl.SchemaChangeOperation.CHANGEFIELDTYPE;
@@ -12,9 +13,13 @@ import static com.gentics.mesh.core.rest.schema.change.impl.SchemaChangeOperatio
 import static com.gentics.mesh.core.rest.schema.change.impl.SchemaChangeOperation.UPDATEFIELD;
 import static io.netty.handler.codec.http.HttpResponseStatus.BAD_REQUEST;
 
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
-import java.util.Objects;
+import java.util.Map.Entry;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import org.apache.commons.lang.StringUtils;
 
@@ -25,10 +30,7 @@ import com.gentics.mesh.core.rest.schema.FieldSchema;
 import com.gentics.mesh.core.rest.schema.LanguageOverrideUtil;
 import com.gentics.mesh.core.rest.schema.ListFieldSchema;
 import com.gentics.mesh.core.rest.schema.change.impl.SchemaChangeModel;
-import com.google.common.base.Equivalence;
-import com.google.common.collect.MapDifference;
-import com.google.common.collect.MapDifference.ValueDifference;
-import com.google.common.collect.Maps;
+import com.gentics.mesh.util.CompareUtils;
 
 import io.vertx.core.json.JsonObject;
 
@@ -48,6 +50,10 @@ public abstract class AbstractFieldSchema implements FieldSchema {
 	@JsonProperty(required = false)
 	@JsonPropertyDescription("Flag which indicates whether the field is required or not. A create request will fail if no field value has been specified. The update request will fail when the value is omitted and the field has never been saved before.")
 	private boolean required = false;
+
+	@JsonProperty(required = false)
+	@JsonPropertyDescription("Flag which indicates whether the field is excluded from indexing or not.")
+	private boolean noIndex = false;
 
 	@JsonProperty(required = false)
 	@JsonPropertyDescription("Additional elasticsearch index field configuration. This can be used to add custom fields with custom analyzers to the search index.")
@@ -87,6 +93,17 @@ public abstract class AbstractFieldSchema implements FieldSchema {
 	}
 
 	@Override
+	public boolean isNoIndex() {
+		return noIndex;
+	}
+
+	@Override
+	public FieldSchema setNoIndex(boolean isNoIndex) {
+		this.noIndex = isNoIndex;
+		return this;
+	}
+
+	@Override
 	public JsonObject getElasticsearch() {
 		return elasticsearch;
 	}
@@ -101,6 +118,9 @@ public abstract class AbstractFieldSchema implements FieldSchema {
 	public void apply(Map<String, Object> fieldProperties) {
 		if (fieldProperties.get(SchemaChangeModel.REQUIRED_KEY) != null) {
 			setRequired(Boolean.valueOf(String.valueOf(fieldProperties.get(REQUIRED_KEY))));
+		}
+		if (fieldProperties.get(SchemaChangeModel.NO_INDEX_KEY) != null) {
+			setNoIndex(Boolean.valueOf(String.valueOf(fieldProperties.get(NO_INDEX_KEY))));
 		}
 		if (fieldProperties.get(SchemaChangeModel.ELASTICSEARCH_KEY) != null) {
 			Object value = fieldProperties.get(ELASTICSEARCH_KEY);
@@ -145,30 +165,26 @@ public abstract class AbstractFieldSchema implements FieldSchema {
 			// Add fieldB properties which are new
 			change.getProperties().putAll(schemaPropertiesB);
 		} else {
+			// fields that are null in the other schema are considered "unchanged" (and therefore removed from both maps)
+			// we only allow some fields to be set to "null"
+			List<String> keysWithNullAllowed = Arrays.asList(ELASTICSEARCH_KEY, BinaryFieldSchemaImpl.CHANGE_EXTRACT_CONTENT_KEY,
+					BinaryFieldSchemaImpl.CHANGE_EXTRACT_METADATA_KEY);
+			Set<String> unchangedKeys = schemaPropertiesB.entrySet().stream()
+					.filter(e -> !keysWithNullAllowed.contains(e.getKey()))
+					.filter(e -> e.getValue() == null)
+					.map(Entry::getKey).collect(Collectors.toSet());
+			schemaPropertiesA.keySet().removeAll(unchangedKeys);
+			schemaPropertiesB.keySet().removeAll(unchangedKeys);
 
-			// Generate a structural diff. This way it is easy to determine which field properties have been updated, added or removed.
-			MapDifference<String, Object> diff = Maps.difference(schemaPropertiesA, schemaPropertiesB, new Equivalence<Object>() {
-
-				@Override
-				protected boolean doEquivalent(Object a, Object b) {
-					return Objects.deepEquals(a, b);
+			schemaPropertiesA.entrySet().forEach(entryA -> {
+				String key = entryA.getKey();
+				Object valueA = entryA.getValue();
+				Object valueB = schemaPropertiesB.getOrDefault(key, null);
+				if (!CompareUtils.equals(valueA, valueB, true, !keysWithNullAllowed.contains(key))) {
+					change.setOperation(UPDATEFIELD);
+					change.getProperties().put(key, valueB);
 				}
-
-				@Override
-				protected int doHash(Object t) {
-					return t.hashCode();
-				}
-
 			});
-
-			// Check whether fields have been updated
-			Map<String, ValueDifference<Object>> differentProperties = diff.entriesDiffering();
-			if (!differentProperties.isEmpty()) {
-				change.setOperation(UPDATEFIELD);
-				for (String key : differentProperties.keySet()) {
-					change.getProperties().put(key, differentProperties.get(key).rightValue());
-				}
-			}
 		}
 		return change;
 	}
@@ -179,6 +195,7 @@ public abstract class AbstractFieldSchema implements FieldSchema {
 		Map<String, Object> map = new HashMap<>();
 		map.put(LABEL_KEY, getLabel());
 		map.put(REQUIRED_KEY, isRequired());
+		map.put(NO_INDEX_KEY, isNoIndex());
 		// empty object and null/missing should be treated the same
 		map.put(ELASTICSEARCH_KEY, getElasticsearch() == null || getElasticsearch().size() == 0 ? new JsonObject() : getElasticsearch());
 		return map;

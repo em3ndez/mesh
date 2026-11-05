@@ -6,6 +6,8 @@ import static com.gentics.mesh.MeshEnv.MESH_CONF_FILENAME;
 import java.io.File;
 import java.io.IOException;
 
+import com.gentics.mesh.generator.runner.OpenAPISpecGeneratorRunner;
+
 /**
  * Runner for various example generators.
  */
@@ -49,6 +51,9 @@ public class ExampleGeneratorRunner {
 		}, true);
 		ramlGenerator.run();
 
+		// Generate OpenAPI base spec
+		OpenAPISpecGeneratorRunner.main(new String[] { OUTPUT_ROOT_FOLDER.getPath() });
+
 		// Generate elasticsearch flattened models
 		SearchModelGenerator searchModelGen = new SearchModelGenerator(OUTPUT_ROOT_FOLDER);
 		searchModelGen.run();
@@ -56,10 +61,6 @@ public class ExampleGeneratorRunner {
 		// Generate environment variable table
 		EnvHelpGenerator envGen = new EnvHelpGenerator(OUTPUT_ROOT_FOLDER);
 		envGen.run();
-
-		// Generate database revision table
-		DatabaseRevisionTableGenerator revTable = new DatabaseRevisionTableGenerator(OUTPUT_ROOT_FOLDER);
-		revTable.run();
 
 		// Generate CLI info
 		CLIHelpGenerator cliGenerator = new CLIHelpGenerator(OUTPUT_ROOT_FOLDER);
@@ -76,5 +77,4 @@ public class ExampleGeneratorRunner {
 			conf.delete();
 		}
 	}
-
 }

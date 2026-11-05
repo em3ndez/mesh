@@ -10,16 +10,21 @@ import static io.netty.handler.codec.http.HttpResponseStatus.SERVICE_UNAVAILABLE
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
-
-import javax.inject.Inject;
+import java.util.stream.Collectors;
 
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.tuple.Pair;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.gentics.elasticsearch.client.ElasticsearchClient;
 import com.gentics.elasticsearch.client.HttpErrorException;
@@ -31,7 +36,9 @@ import com.gentics.mesh.core.data.page.Page;
 import com.gentics.mesh.core.data.page.impl.PageImpl;
 import com.gentics.mesh.core.data.perm.InternalPermission;
 import com.gentics.mesh.core.data.role.HibRole;
+import com.gentics.mesh.core.data.search.Compliance;
 import com.gentics.mesh.core.data.search.IndexHandler;
+import com.gentics.mesh.core.data.user.HibUser;
 import com.gentics.mesh.core.db.Database;
 import com.gentics.mesh.core.rest.common.ListResponse;
 import com.gentics.mesh.core.rest.common.PagingMetaInfo;
@@ -40,7 +47,7 @@ import com.gentics.mesh.core.rest.error.GenericRestException;
 import com.gentics.mesh.error.InvalidArgumentException;
 import com.gentics.mesh.error.MeshConfigurationException;
 import com.gentics.mesh.etc.config.MeshOptions;
-import com.gentics.mesh.etc.config.search.ComplianceMode;
+import com.gentics.mesh.json.JsonUtil;
 import com.gentics.mesh.json.MeshJsonException;
 import com.gentics.mesh.parameter.PagingParameters;
 import com.gentics.mesh.search.DevNullSearchProvider;
@@ -54,8 +61,6 @@ import io.reactivex.Observable;
 import io.reactivex.Single;
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
-import io.vertx.core.logging.Logger;
-import io.vertx.core.logging.LoggerFactory;
 
 /**
  * Abstract implementation for a mesh search handler.
@@ -70,11 +75,10 @@ public abstract class AbstractSearchHandler<T extends HibCoreElement<RM>, RM ext
 	protected final SearchProvider searchProvider;
 	protected final MeshOptions options;
 	protected final IndexHandler<T> indexHandler;
-	protected final ComplianceMode complianceMode;
+	protected final Compliance compliance;
 	protected final DAOActions<T, RM> actions;
 
-	@Inject
-	public SearchWaitUtil waitUtil;
+	protected final SearchWaitUtil waitUtil;
 
 	public static final long DEFAULT_SEARCH_PER_PAGE = 10;
 
@@ -86,14 +90,15 @@ public abstract class AbstractSearchHandler<T extends HibCoreElement<RM>, RM ext
 	 * @param options
 	 * @param indexHandler
 	 */
-	public AbstractSearchHandler(Database db, SearchProvider searchProvider, MeshOptions options, IndexHandler<T> indexHandler,
-		DAOActions<T, RM> actions) {
+	public AbstractSearchHandler(Database db, SearchProvider searchProvider, MeshOptions options, Compliance compliance, IndexHandler<T> indexHandler,
+		DAOActions<T, RM> actions, SearchWaitUtil waitUtil) {
 		this.db = db;
 		this.searchProvider = searchProvider;
 		this.options = options;
 		this.indexHandler = indexHandler;
-		this.complianceMode = options.getSearchOptions().getComplianceMode();
+		this.compliance = compliance;
 		this.actions = actions;
+		this.waitUtil = waitUtil;
 	}
 
 	/**
@@ -108,24 +113,26 @@ public abstract class AbstractSearchHandler<T extends HibCoreElement<RM>, RM ext
 		try {
 			JsonObject userJson = new JsonObject(searchQuery);
 
-			JsonArray roleUuids = db.tx(tx -> {
-				JsonArray json = new JsonArray();
-				for (HibRole role : tx.userDao().getRoles(ac.getUser())) {
-					json.add(role.getUuid());
+			JsonArray filter = new JsonArray();
+			db.tx(tx -> {
+				HibUser user = ac.getUser();
+				if (!user.isAdmin()) {
+					JsonArray roleUuids = new JsonArray();
+					for (HibRole role : tx.userDao().getRoles(ac.getUser())) {
+						roleUuids.add(role.getUuid());
+					}
+					filter.add(new JsonObject().put("terms", new JsonObject().put("_roleUuids", roleUuids)));
 				}
-				return json;
 			});
 
-			JsonObject newQuery = new JsonObject().put("bool",
-				new JsonObject().put("filter", new JsonArray().add(new JsonObject().put("terms", new JsonObject().put(
-					"_roleUuids", roleUuids)))));
+			JsonObject newQuery = new JsonObject().put("bool", new JsonObject().put("filter", filter));
 
 			// Wrap the original query in a nested bool query in order check the role perms
 			JsonObject originalQuery = userJson.getJsonObject("query");
 			if (originalQuery != null) {
 				newQuery.getJsonObject("bool").put("must", originalQuery);
-				userJson.put("query", newQuery);
 			}
+			userJson.put("query", newQuery);
 
 			// Add language filter
 			if (filterLanguage) {
@@ -174,17 +181,22 @@ public abstract class AbstractSearchHandler<T extends HibCoreElement<RM>, RM ext
 		})).subscribe(response -> {
 			// JsonObject firstResponse = response.getJsonArray("responses").getJsonObject(0);
 			// Directly relay the response to the requester without converting it.
-			ac.send(response.toString(), OK);
+			ac.send(JsonUtil.toJson(response, ac.isMinify(options.getHttpServerOptions())), OK);
 		}, error -> {
 			if (error instanceof HttpErrorException) {
 				HttpErrorException he = (HttpErrorException) error;
+				log.error("Error at: " + error.toString());
 				log.error("Search query failed", error);
-				log.error("Info: " + error.toString());
 				try {
+					String body = he.getBody();
+					if (StringUtils.isNotBlank(body)) {
 					ac.send(he.getBody(), HttpResponseStatus.BAD_REQUEST);
+					} else {
+						ac.send(HttpResponseStatus.BAD_REQUEST);
+					}
 				} catch (Exception e1) {
 					log.error("Error while converting es error to response", e1);
-					throw error(INTERNAL_SERVER_ERROR, "Error while converting error.", e1);
+					ac.fail(error(INTERNAL_SERVER_ERROR, "error_internal", e1));
 				}
 			} else if (error instanceof TimeoutException) {
 				ac.fail(error(INTERNAL_SERVER_ERROR, "search_error_timeout"));
@@ -272,16 +284,7 @@ public abstract class AbstractSearchHandler<T extends HibCoreElement<RM>, RM ext
 						log.warn("Object could not be found for uuid {" + uuid + "}. The element will be omitted.");
 						// Reduce the total count
 						long total = extractTotalCount(hitsInfo);
-						switch (complianceMode) {
-						case ES_6:
-							hitsInfo.put("total", total - 1);
-							break;
-						case ES_7:
-							hitsInfo.put("total", new JsonObject().put("value", total - 1));
-							break;
-						default:
-							throw new RuntimeException("Unknown compliance mode {" + complianceMode + "}");
-						}
+						compliance.putTotal(hitsInfo, total - 1);
 					} else {
 						list.add(actions.transformToRestSync(tx, element, ac, 0, language));
 					}
@@ -298,7 +301,7 @@ public abstract class AbstractSearchHandler<T extends HibCoreElement<RM>, RM ext
 		}).collect(() -> listResponse.getData(), (x, y) -> {
 			x.add(y);
 		}).subscribe(list -> {
-			ac.send(listResponse.toJson(), OK);
+			ac.send(listResponse.toJson(ac.isMinify(options.getHttpServerOptions())), OK);
 		}, error -> {
 			log.error("Error while processing search response items", error);
 			ac.fail(error);
@@ -346,16 +349,10 @@ public abstract class AbstractSearchHandler<T extends HibCoreElement<RM>, RM ext
 	}
 
 	protected long extractTotalCount(JsonObject info) {
-		switch (complianceMode) {
-		case ES_7:
-			return info.getJsonObject("total").getLong("value");
-		case ES_6:
-			return info.getLong("total");
-		default:
-			throw new RuntimeException("Unknown compliance mode {" + complianceMode + "}");
-		}
+		return compliance.getTotal(info);
 	}
 
+	@SuppressWarnings("unchecked")
 	@Override
 	public Page<? extends T> query(InternalActionContext ac, String query, PagingParameters pagingInfo, InternalPermission... permissions)
 		throws MeshConfigurationException, InterruptedException, ExecutionException, TimeoutException {
@@ -398,21 +395,27 @@ public abstract class AbstractSearchHandler<T extends HibCoreElement<RM>, RM ext
 					List<T> elementList = new ArrayList<>();
 					JsonObject hitsInfo = firstResponse.getJsonObject("hits");
 					JsonArray hits = hitsInfo.getJsonArray("hits");
-					for (int i = 0; i < hits.size(); i++) {
-						JsonObject hit = hits.getJsonObject(i);
-						String id = hit.getString("_id");
-						int pos = id.indexOf("-");
-						String uuid = pos > 0 ? id.substring(0, pos) : id;
-
-						// Locate the node
-						T element = indexHandler.elementLoader().apply(uuid);
-						if (element != null) {
-							elementList.add(element);
-						}
-					}
-
 					PagingMetaInfo info = extractMetaInfo(hitsInfo, pagingInfo);
-					return new PageImpl<>(elementList, info.getTotalCount(), pagingInfo.getPage(), info.getPageCount(), pagingInfo.getPerPage());
+					AtomicLong totalCount = new AtomicLong(info.getTotalCount());
+					List<String> uuids = hits.stream().map(hit -> {
+						JsonObject val;
+						if (hit instanceof Map) {
+					      val = new JsonObject((Map<String,Object>) hit);
+					    } else {
+					    	val = (JsonObject) hit;
+					    }
+						String id = val.getString("_id");
+						int pos = id.indexOf("-");
+
+						return pos > 0 ? id.substring(0, pos) : id;
+					}).collect(Collectors.toList());
+					Map<String, T> uuidEntityMap = indexHandler.elementsLoader().apply(uuids).collect(Collectors.toMap(Pair::getKey, Pair::getValue));
+					uuids.stream().map(uuidEntityMap::get).peek(o -> {
+						if (o == null) {
+							totalCount.decrementAndGet();
+						}
+					}).filter(Objects::nonNull).forEach(elementList::add);
+					return new PageImpl<>(elementList, totalCount.get(), pagingInfo.getPage(), info.getPageCount(), pagingInfo.getPerPage());
 				});
 			});
 

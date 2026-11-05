@@ -2,9 +2,12 @@ package com.gentics.mesh.dagger.module;
 
 import javax.inject.Singleton;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 
 import com.gentics.mesh.cli.BootstrapInitializer;
+import com.gentics.mesh.core.data.storage.BinaryStorage;
 import com.gentics.mesh.core.data.storage.S3BinaryStorage;
 import com.gentics.mesh.core.image.ImageManipulator;
 import com.gentics.mesh.etc.config.HttpServerConfig;
@@ -16,8 +19,6 @@ import dagger.Module;
 import dagger.Provides;
 import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpMethod;
-import io.vertx.core.logging.Logger;
-import io.vertx.core.logging.LoggerFactory;
 import io.vertx.ext.web.handler.CorsHandler;
 import io.vertx.ext.web.handler.impl.BodyHandlerImpl;
 
@@ -41,8 +42,9 @@ public class MeshModule {
 	 */
 	@Provides
 	@Singleton
-	public static ImageManipulator imageProvider(io.vertx.reactivex.core.Vertx vertx, MeshOptions options, S3BinaryStorage s3BinaryStorage) {
-		return new ImgscalrImageManipulator(vertx, options, s3BinaryStorage);
+	public static ImageManipulator imageProvider(io.vertx.reactivex.core.Vertx vertx, MeshOptions options,
+			BinaryStorage binaryStorage, S3BinaryStorage s3BinaryStorage) {
+		return new ImgscalrImageManipulator(vertx, options, binaryStorage, s3BinaryStorage);
 	}
 
 	/**
@@ -66,7 +68,10 @@ public class MeshModule {
 	public static CorsHandler corsHandler(MeshOptions options) {
 		HttpServerConfig serverOptions = options.getHttpServerOptions();
 		String pattern = serverOptions.getCorsAllowedOriginPattern();
-		CorsHandler corsHandler = CorsHandler.create(pattern);
+		if ("*".equals(pattern)) {
+			pattern = ".*";
+		}
+		CorsHandler corsHandler = CorsHandler.create().addOriginWithRegex(pattern);
 		boolean allowCredentials = serverOptions.getCorsAllowCredentials();
 		corsHandler.allowCredentials(allowCredentials);
 		corsHandler.allowedMethod(HttpMethod.GET);
@@ -83,7 +88,8 @@ public class MeshModule {
 	}
 
 	/**
-	 * Provide the vertex instance from the {@link BootstrapInitializer} since it is initialized there.
+	 * Provide the vertex instance from the {@link BootstrapInitializer} since it is
+	 * initialized there.
 	 * 
 	 * @param boot
 	 * @return

@@ -1,6 +1,9 @@
 package com.gentics.mesh.rest.client.method;
 
 import com.gentics.mesh.core.rest.common.GenericMessageResponse;
+import com.gentics.mesh.core.rest.common.ObjectPermissionGrantRequest;
+import com.gentics.mesh.core.rest.common.ObjectPermissionResponse;
+import com.gentics.mesh.core.rest.common.ObjectPermissionRevokeRequest;
 import com.gentics.mesh.core.rest.role.RoleCreateRequest;
 import com.gentics.mesh.core.rest.role.RoleListResponse;
 import com.gentics.mesh.core.rest.role.RolePermissionRequest;
@@ -98,5 +101,30 @@ public interface RoleClientMethods {
 	 * @param restRole
 	 * @return
 	 */
-	MeshRequest<RoleResponse> updateRole(String uuid, RoleUpdateRequest restRole);
+	MeshRequest<RoleResponse> updateRole(String uuid, RoleUpdateRequest restRole, ParameterProvider... parameters);
+
+	/**
+	 * Get the role permissions on the role
+	 * 
+	 * @param uuid
+	 *            Uuid of the role
+	 * @return request
+	 */
+	MeshRequest<ObjectPermissionResponse> getRoleRolePermissions(String uuid, ParameterProvider... parameters);
+
+	/**
+	 * Grant permissions on the role to roles
+	 * @param uuid Uuid of the role
+	 * @param request request
+	 * @return mesh request
+	 */
+	MeshRequest<ObjectPermissionResponse> grantRoleRolePermissions(String uuid, ObjectPermissionGrantRequest request);
+
+	/**
+	 * Revoke permissions on the role from roles
+	 * @param uuid Uuid of the role
+	 * @param request request
+	 * @return mesh request
+	 */
+	MeshRequest<ObjectPermissionResponse> revokeRoleRolePermissions(String uuid, ObjectPermissionRevokeRequest request);
 }

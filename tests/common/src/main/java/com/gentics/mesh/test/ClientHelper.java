@@ -10,18 +10,25 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
+import java.lang.reflect.InvocationTargetException;
+import java.util.Arrays;
 import java.util.Locale;
+import java.util.Objects;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 
 import com.gentics.mesh.core.data.i18n.I18NUtil;
 import com.gentics.mesh.core.rest.common.GenericMessageResponse;
 import com.gentics.mesh.core.rest.error.GenericRestException;
+import com.gentics.mesh.json.JsonUtil;
 import com.gentics.mesh.rest.client.MeshRequest;
 import com.gentics.mesh.rest.client.MeshResponse;
 import com.gentics.mesh.rest.client.MeshRestClientMessageException;
 import com.gentics.mesh.rest.client.impl.EmptyResponse;
 import com.gentics.mesh.test.context.ClientHandler;
+import com.gentics.mesh.test.util.TestUtils;
 import com.gentics.mesh.util.ETag;
+import com.google.gson.JsonSyntaxException;
 
 import io.netty.handler.codec.http.HttpResponseStatus;
 import io.reactivex.Observable;
@@ -44,6 +51,39 @@ public final class ClientHelper {
 		} catch (Exception e) {
 			throw new RuntimeException(e);
 		}
+	}
+
+	/**
+	 * Variant of {@link #call(ClientHandler)} which repeats calling the handler, as long as it fails with the given response status.
+	 * If the given timeout occurs while waiting for the handler to succeed, the last error will be returned
+	 * @param <T> type of the response
+	 * @param handler handler to be called
+	 * @param status anticipated error status (at least for a while)
+	 * @param timeout timeout of waiting for success
+	 * @param unit unit of the waiting timeout
+	 * @return return value (in case of success)
+	 */
+	public static <T> T call(ClientHandler<T> handler, HttpResponseStatus status, long timeout, TimeUnit unit) {
+		long start = System.currentTimeMillis();
+		long timeoutMs = unit.toMillis(timeout);
+		long waitMs = timeoutMs / 10L;
+		RuntimeException lastThrown;
+
+		do {
+			try {
+				return call(handler);
+			} catch (RuntimeException e) {
+				lastThrown = e;
+				if (!isFailureMessage(e, status)) {
+					throw e;
+				}
+
+				// sleep
+				TestUtils.sleep(waitMs);
+			}
+		} while (System.currentTimeMillis() - start < timeoutMs);
+
+		throw lastThrown;
 	}
 
 	/**
@@ -123,6 +163,17 @@ public final class ClientHelper {
 				Throwable cause = e.getCause();
 				if (cause instanceof MeshRestClientMessageException) {
 					error = (MeshRestClientMessageException) e.getCause();
+				} else if (cause.getClass().getCanonicalName().equals("org.openapitools.client.ApiException")) {
+					try {
+						String responseBody = (String) Arrays.stream(cause.getClass().getDeclaredMethods()).filter(m -> m.getName().equals("getResponseBody") && m.getParameterCount() == 0).findAny().orElseThrow(() -> new IllegalStateException(e)).invoke(cause);
+						int code = (int) Arrays.stream(cause.getClass().getDeclaredMethods()).filter(m -> m.getName().equals("getCode") && m.getParameterCount() == 0).findAny().orElseThrow(() -> new IllegalStateException(e)).invoke(cause);
+						String message = (String) Arrays.stream(cause.getClass().getDeclaredMethods()).filter(m -> m.getName().equals("getMessage") && m.getParameterCount() == 0).findAny().orElseThrow(() -> new IllegalStateException(e)).invoke(cause);
+						error = new MeshRestClientMessageException(code, message, JsonUtil.readValue(responseBody, GenericMessageResponse.class), null, null);
+					} catch (JsonSyntaxException | GenericRestException | IllegalAccessException
+							| IllegalArgumentException | InvocationTargetException | IllegalStateException
+							| SecurityException e1) {
+						throw new RuntimeException(e1);
+					}
 				} else {
 					throw (RuntimeException) e;
 				}
@@ -134,9 +185,7 @@ public final class ClientHelper {
 			} else {
 				expectException(error, status, bodyMessageI18nKey, i18nParams);
 			}
-			if (error instanceof MeshRestClientMessageException) {
-				return (MeshRestClientMessageException) e.getCause();
-			}
+			return error;
 		} catch (Exception e) {
 			throw new RuntimeException(e);
 		}
@@ -244,6 +293,20 @@ public final class ClientHelper {
 		} else {
 			e.printStackTrace();
 			fail("Unhandled exception");
+		}
+	}
+
+	public static boolean isFailureMessage(Throwable e, HttpResponseStatus status) {
+		if (e instanceof GenericRestException) {
+			GenericRestException exception = (GenericRestException) e;
+			return Objects.equals(status, exception.getStatus());
+		} else if (e instanceof MeshRestClientMessageException) {
+			MeshRestClientMessageException exception = (MeshRestClientMessageException) e;
+			return Objects.equals(status.code(), exception.getStatusCode());
+		} else if (e != null && e.getCause() != null && e.getCause() != e) {
+			return isFailureMessage(e.getCause(), status);
+		} else {
+			return false;
 		}
 	}
 }

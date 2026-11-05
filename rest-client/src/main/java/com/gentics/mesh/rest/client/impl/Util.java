@@ -1,13 +1,19 @@
 package com.gentics.mesh.rest.client.impl;
 
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.security.InvalidParameterException;
+import java.util.concurrent.Callable;
+import java.util.function.Supplier;
+import java.util.stream.Stream;
+
+import org.apache.commons.lang3.Strings;
+
 import com.fasterxml.jackson.databind.JsonNode;
 import com.gentics.mesh.core.rest.MeshEvent;
 import com.gentics.mesh.json.JsonUtil;
 import com.gentics.mesh.rest.client.MeshRestClient;
-
-import java.security.InvalidParameterException;
-import java.util.function.Supplier;
-import java.util.stream.Stream;
+import com.gentics.mesh.util.UUIDUtil;
 
 /**
  * Collection of utility methods that are useful for {@link MeshRestClient} operation.
@@ -74,7 +80,7 @@ public final class Util {
 	 * @param <T>
 	 * @return
 	 */
-	public static <T> Supplier<T> lazily(WrappedSupplier<T> supplier) {
+	public static <T> Supplier<T> lazily(Callable<T> supplier) {
 		return new Supplier<T>() {
 			T value;
 			boolean supplied = false;
@@ -83,7 +89,7 @@ public final class Util {
 			public synchronized T get() {
 				if (!supplied) {
 					try {
-						value = supplier.get();
+						value = supplier.call();
 						supplied = true;
 					} catch (Exception e) {
 						throw new RuntimeException(e);
@@ -118,7 +124,51 @@ public final class Util {
 		}
 	}
 
-	interface WrappedSupplier<T> {
-		T get() throws Exception;
+	/**
+	 * Test whether the given value is a uuid. Throws an InvalidParameterException if not.
+	 * @param value value to test
+	 * @param name name of the parameter
+	 */
+	public static void requireUuid(String value, String name) {
+		if (!UUIDUtil.isUUID(value)) {
+			throw new InvalidParameterException("Parameter %s must be a uuid. Given value: %s".formatted(name, value));
+		}
+	}
+
+	/**
+	 * Safely append the given path to the prefix (which also is a path), so that the resulting path still is a subpath of the given prefix.
+	 * If the composed path is no subpath of the given prefix, throws an InvalidParameterException.
+	 * 
+	 * @param prefix prefix
+	 * @param path path to append
+	 * @param name name of the parameter containing the path (for the description in the exception)
+	 * @return composed path
+	 */
+	public static String safelyAppendPath(String prefix, String path, String name) {
+		String composedPath = Strings.CI.removeEnd(prefix, "/") + Strings.CI.prependIfMissing(path, "/");
+
+		try {
+			String normalizedPath = normalizedPath(composedPath);
+
+			if (!Strings.CI.startsWith(normalizedPath, prefix)) {
+				throw new InvalidParameterException("Parameter %s is invalid. Given value: %s".formatted(name, path));
+			}
+		} catch (URISyntaxException e) {
+			throw new InvalidParameterException("Parameter %s is invalid. Given value: %s".formatted(name, path));
+		}
+
+		return composedPath;
+	}
+
+	/**
+	 * Normalize the path
+	 * @param path path to normalize
+	 * @return normalized path
+	 * @throws URISyntaxException
+	 */
+	public static String normalizedPath(String path) throws URISyntaxException {
+		String normalizedURI = new URI("http://host%s".formatted(Strings.CI.prependIfMissing(path, "/"))).normalize().toString();
+
+		return Strings.CI.removeStart(normalizedURI, "http://host");
 	}
 }

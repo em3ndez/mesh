@@ -25,28 +25,31 @@ import javax.inject.Inject;
 
 import org.apache.commons.lang3.StringUtils;
 
-import com.gentics.mesh.auth.MeshAuthChainImpl;
+import com.gentics.mesh.auth.MeshAuthChain;
 import com.gentics.mesh.cli.BootstrapInitializer;
 import com.gentics.mesh.context.InternalActionContext;
+import com.gentics.mesh.core.db.Database;
+import com.gentics.mesh.core.endpoint.RolePermissionHandlingProjectEndpoint;
+import com.gentics.mesh.core.endpoint.admin.LocalConfigApi;
+import com.gentics.mesh.etc.config.MeshOptions;
 import com.gentics.mesh.parameter.impl.GenericParametersImpl;
 import com.gentics.mesh.parameter.impl.PagingParametersImpl;
 import com.gentics.mesh.rest.InternalEndpointRoute;
-import com.gentics.mesh.router.route.AbstractProjectEndpoint;
 
 /**
  * Verticle for REST endpoints to manage branches.
  */
-public class BranchEndpoint extends AbstractProjectEndpoint {
+public class BranchEndpoint extends RolePermissionHandlingProjectEndpoint {
 
 	private BranchCrudHandler crudHandler;
 
 	public BranchEndpoint() {
-		super("branches", null, null);
+		super("branches", null, null, null, null, null);
 	}
 
 	@Inject
-	public BranchEndpoint(MeshAuthChainImpl chain, BootstrapInitializer boot, BranchCrudHandler crudHandler) {
-		super("branches", chain, boot);
+	public BranchEndpoint(MeshAuthChain chain, BootstrapInitializer boot, BranchCrudHandler crudHandler, LocalConfigApi localConfigApi, Database db, MeshOptions options) {
+		super("branches", chain, boot, localConfigApi, db, options);
 		this.crudHandler = crudHandler;
 	}
 
@@ -67,6 +70,7 @@ public class BranchEndpoint extends AbstractProjectEndpoint {
 		addNodeMigrationHandler();
 		addMicronodeMigrationHandler();
 		addTagsHandler();
+		addRolePermissionHandler("branchUuid", BRANCH_UUID, "branch", crudHandler, false);
 	}
 
 	private void addMicroschemaInfoHandler() {
@@ -115,7 +119,7 @@ public class BranchEndpoint extends AbstractProjectEndpoint {
 			InternalActionContext ac = wrap(rc);
 			String branchUuid = rc.request().getParam("branchUuid");
 			crudHandler.handleMigrateRemainingNodes(ac, branchUuid);
-		});
+		}, isOrderedBlockingHandlers());
 	}
 
 	private void addMicronodeMigrationHandler() {
@@ -131,7 +135,7 @@ public class BranchEndpoint extends AbstractProjectEndpoint {
 			InternalActionContext ac = wrap(rc);
 			String branchUuid = rc.request().getParam("branchUuid");
 			crudHandler.handleMigrateRemainingMicronodes(ac, branchUuid);
-		});
+		}, isOrderedBlockingHandlers());
 	}
 
 	private void addCreateHandler() {
@@ -147,7 +151,7 @@ public class BranchEndpoint extends AbstractProjectEndpoint {
 		endpoint.blockingHandler(rc -> {
 			InternalActionContext ac = wrap(rc);
 			crudHandler.handleCreate(ac);
-		});
+		}, isOrderedBlockingHandlers());
 	}
 
 	private void addReadHandler() {
@@ -199,7 +203,7 @@ public class BranchEndpoint extends AbstractProjectEndpoint {
 			String uuid = rc.request().params().get("branchUuid");
 			InternalActionContext ac = wrap(rc);
 			crudHandler.handleAssignSchemaVersion(ac, uuid);
-		});
+		}, isOrderedBlockingHandlers());
 
 		InternalEndpointRoute addMicroschema = createRoute();
 		addMicroschema.path("/:branchUuid/microschemas");
@@ -216,7 +220,7 @@ public class BranchEndpoint extends AbstractProjectEndpoint {
 			InternalActionContext ac = wrap(rc);
 			String uuid = rc.request().params().get("branchUuid");
 			crudHandler.handleAssignMicroschemaVersion(ac, uuid);
-		});
+		}, isOrderedBlockingHandlers());
 
 		InternalEndpointRoute setLatest = createRoute();
 		setLatest.path("/:branchUuid/latest");
@@ -231,7 +235,7 @@ public class BranchEndpoint extends AbstractProjectEndpoint {
 			InternalActionContext ac = wrap(rc);
 			String uuid = rc.request().params().get("branchUuid");
 			crudHandler.handleSetLatest(ac, uuid);
-		});
+		}, isOrderedBlockingHandlers());
 
 		InternalEndpointRoute updateBranch = createRoute();
 		updateBranch.path("/:branchUuid");
@@ -243,13 +247,13 @@ public class BranchEndpoint extends AbstractProjectEndpoint {
 		updateBranch.consumes(APPLICATION_JSON);
 		updateBranch.produces(APPLICATION_JSON);
 		updateBranch.exampleRequest(versioningExamples.createBranchUpdateRequest("Winter Collection Branch"));
-		updateBranch.exampleResponse(OK, versioningExamples.createBranchResponse("Winter Collection Branch", false), "Updated branch");
-		updateBranch.events(BRANCH_UPDATED);
+		updateBranch.exampleResponse(OK, versioningExamples.createBranchResponse("Winter Collection Branch", false), "Updated or new branch");
+		updateBranch.events(BRANCH_CREATED, BRANCH_UPDATED);
 		updateBranch.blockingHandler(rc -> {
 			InternalActionContext ac = wrap(rc);
 			String uuid = rc.request().params().get("branchUuid");
 			crudHandler.handleUpdate(ac, uuid);
-		});
+		}, isOrderedBlockingHandlers());
 	}
 
 	private void addTagsHandler() {
@@ -280,7 +284,7 @@ public class BranchEndpoint extends AbstractProjectEndpoint {
 			InternalActionContext ac = wrap(rc);
 			String branchUuid = ac.getParameter("branchUuid");
 			crudHandler.handleBulkTagUpdate(ac, branchUuid);
-		});
+		}, isOrderedBlockingHandlers());
 
 		InternalEndpointRoute addTag = createRoute();
 		addTag.path("/:branchUuid/tags/:tagUuid");
@@ -297,7 +301,7 @@ public class BranchEndpoint extends AbstractProjectEndpoint {
 			String branchUuid = ac.getParameter("branchUuid");
 			String tagUuid = ac.getParameter("tagUuid");
 			crudHandler.handleAddTag(ac, branchUuid, tagUuid);
-		});
+		}, isOrderedBlockingHandlers());
 
 		InternalEndpointRoute removeTag = createRoute();
 		removeTag.path("/:branchUuid/tags/:tagUuid");
@@ -314,7 +318,7 @@ public class BranchEndpoint extends AbstractProjectEndpoint {
 			String branchUuid = ac.getParameter("branchUuid");
 			String tagUuid = ac.getParameter("tagUuid");
 			crudHandler.handleRemoveTag(ac, branchUuid, tagUuid);
-		});
+		}, isOrderedBlockingHandlers());
 
 	}
 }

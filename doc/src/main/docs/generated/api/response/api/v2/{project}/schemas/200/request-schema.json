@@ -5,7 +5,7 @@
     "data" : {
       "type" : "array",
       "required" : true,
-      "description" : "Array which contains the found elements.",
+      "description" : "Array which contains the elements.",
       "items" : {
         "type" : "object",
         "id" : "urn:jsonschema:com:gentics:mesh:core:rest:schema:impl:SchemaResponse",
@@ -111,16 +111,6 @@
               "type" : "object",
               "id" : "urn:jsonschema:com:gentics:mesh:core:rest:schema:FieldSchema",
               "properties" : {
-                "name" : {
-                  "type" : "string",
-                  "required" : true,
-                  "description" : "Name of the field."
-                },
-                "type" : {
-                  "type" : "string",
-                  "required" : true,
-                  "description" : "Type of the field."
-                },
                 "required" : {
                   "type" : "boolean"
                 },
@@ -131,6 +121,19 @@
                 "elasticsearch" : {
                   "type" : "object",
                   "$ref" : "urn:jsonschema:io:vertx:core:json:JsonObject"
+                },
+                "noIndex" : {
+                  "type" : "boolean"
+                },
+                "name" : {
+                  "type" : "string",
+                  "required" : true,
+                  "description" : "Name of the field."
+                },
+                "type" : {
+                  "type" : "string",
+                  "required" : true,
+                  "description" : "Type of the field."
                 }
               }
             }
@@ -138,6 +141,13 @@
           "autoPurge" : {
             "type" : "boolean",
             "description" : "Auto purge flag of the schema. Controls whether contents of this schema should be automatically purged on update."
+          },
+          "noIndex" : {
+            "type" : "boolean",
+            "description" : "Flag which indicates whether nodes which use this schema should be excluded from the indexing."
+          },
+          "microschema" : {
+            "type" : "boolean"
           },
           "permissions" : {
             "type" : "object",
@@ -195,7 +205,6 @@
         },
         "perPage" : {
           "type" : "integer",
-          "required" : true,
           "description" : "Number of elements which can be included in a single page."
         },
         "pageCount" : {

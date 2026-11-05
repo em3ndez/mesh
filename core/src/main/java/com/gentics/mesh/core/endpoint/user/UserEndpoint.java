@@ -4,6 +4,7 @@ import static com.gentics.mesh.core.rest.MeshEvent.USER_CREATED;
 import static com.gentics.mesh.core.rest.MeshEvent.USER_DELETED;
 import static com.gentics.mesh.core.rest.MeshEvent.USER_UPDATED;
 import static com.gentics.mesh.example.ExampleUuids.USER_EDITOR_UUID;
+import static com.gentics.mesh.example.ExampleUuids.TOKEN_UUID;
 import static com.gentics.mesh.http.HttpConstants.APPLICATION_JSON;
 import static io.netty.handler.codec.http.HttpResponseStatus.CREATED;
 import static io.netty.handler.codec.http.HttpResponseStatus.NO_CONTENT;
@@ -11,11 +12,16 @@ import static io.netty.handler.codec.http.HttpResponseStatus.OK;
 import static io.vertx.core.http.HttpMethod.DELETE;
 import static io.vertx.core.http.HttpMethod.GET;
 import static io.vertx.core.http.HttpMethod.POST;
+import static io.vertx.core.http.HttpMethod.PUT;
 
 import javax.inject.Inject;
 
-import com.gentics.mesh.auth.MeshAuthChainImpl;
+import com.gentics.mesh.auth.MeshAuthChain;
 import com.gentics.mesh.context.InternalActionContext;
+import com.gentics.mesh.core.db.Database;
+import com.gentics.mesh.core.endpoint.RolePermissionHandlingEndpoint;
+import com.gentics.mesh.core.endpoint.admin.LocalConfigApi;
+import com.gentics.mesh.etc.config.MeshOptions;
 import com.gentics.mesh.parameter.impl.GenericParametersImpl;
 import com.gentics.mesh.parameter.impl.NodeParametersImpl;
 import com.gentics.mesh.parameter.impl.PagingParametersImpl;
@@ -23,26 +29,25 @@ import com.gentics.mesh.parameter.impl.RolePermissionParametersImpl;
 import com.gentics.mesh.parameter.impl.UserParametersImpl;
 import com.gentics.mesh.parameter.impl.VersioningParametersImpl;
 import com.gentics.mesh.rest.InternalEndpointRoute;
-import com.gentics.mesh.router.route.AbstractInternalEndpoint;
 
 import io.vertx.core.http.HttpHeaders;
 
 /**
  * Endpoint for /api/v1/users
  */
-public class UserEndpoint extends AbstractInternalEndpoint {
+public class UserEndpoint extends RolePermissionHandlingEndpoint {
 
 	private UserCrudHandler crudHandler;
 
 	private UserTokenAuthHandler userTokenHandler;
 
 	public UserEndpoint() {
-		super("users", null);
+		super("users", null, null, null, null);
 	}
 
 	@Inject
-	public UserEndpoint(MeshAuthChainImpl chain, UserCrudHandler userCrudHandler, UserTokenAuthHandler userTokenHandler) {
-		super("users", chain);
+	public UserEndpoint(MeshAuthChain chain, UserCrudHandler userCrudHandler, UserTokenAuthHandler userTokenHandler, LocalConfigApi localConfigApi, Database db, MeshOptions options) {
+		super("users", chain, localConfigApi, db, options);
 		this.crudHandler = userCrudHandler;
 		this.userTokenHandler = userTokenHandler;
 	}
@@ -63,6 +68,7 @@ public class UserEndpoint extends AbstractInternalEndpoint {
 		addResetTokenHandler();
 		addAPITokenHandler();
 		addReadPermissionHandler();
+		addRolePermissionHandler("userUuid", USER_EDITOR_UUID, "user", crudHandler, false);
 	}
 
 	private void addAPITokenHandler() {
@@ -71,32 +77,53 @@ public class UserEndpoint extends AbstractInternalEndpoint {
 		endpoint.setRAMLPath("/{userUuid}/token");
 		endpoint.addUriParameter("userUuid", "Uuid of the user.", USER_EDITOR_UUID);
 		endpoint.description(
-			"Return API token which can be used to authenticate the user. Store the key somewhere save since you won't be able to retrieve it later on. This invalidates all tokens previously issued for this user.");
+			"Return API token which can be used to authenticate the user. Store the key somewhere save since you won't be able to retrieve it later on. Requires UPDATE permission on the user.");
 		endpoint.method(POST);
 		endpoint.setMutating(true);
+		endpoint.consumes(APPLICATION_JSON);
 		endpoint.produces(APPLICATION_JSON);
-		endpoint.exampleResponse(OK, userExamples.getAPIKeyResponse(), "The User API token response.");
+		endpoint.exampleRequest(userExamples.getAPITokenCreateRequest("New API Token"));
+		endpoint.exampleResponse(OK, userExamples.getAPIKeyResponse("New API Token"), "The User API token response.");
 		endpoint.blockingHandler(rc -> {
 			InternalActionContext ac = wrap(rc);
 			String uuid = ac.getParameter("userUuid");
 			rc.response().headers().set(HttpHeaders.CACHE_CONTROL, "private");
 			crudHandler.handleIssueAPIToken(ac, uuid);
-		});
+		}, isOrderedBlockingHandlers());
 
 		InternalEndpointRoute deleteEndpoint = createRoute();
-		deleteEndpoint.path("/:userUuid/token");
-		deleteEndpoint.setRAMLPath("/{userUuid}/token");
+		deleteEndpoint.path("/:userUuid/token/:tokenUuid");
+		deleteEndpoint.setRAMLPath("/{userUuid}/token/{tokenUuid}");
 		deleteEndpoint.addUriParameter("userUuid", "Uuid of the user.", USER_EDITOR_UUID);
+		deleteEndpoint.addUriParameter("tokenUuid", "Uuid of the token.", TOKEN_UUID);
 		deleteEndpoint.description("Invalidate the issued API token.");
 		deleteEndpoint.method(DELETE);
 		deleteEndpoint.setMutating(true);
 		deleteEndpoint.produces(APPLICATION_JSON);
-		deleteEndpoint.exampleResponse(OK, miscExamples.createMessageResponse(), "Message confirming the invalidation of the API token.");
+		deleteEndpoint.exampleResponse(OK, miscExamples.createMessageResponse(), "Message confirming the invalidation of the API token. Requires UPDATE permission on the user.");
 		deleteEndpoint.blockingHandler(rc -> {
 			InternalActionContext ac = wrap(rc);
-			String uuid = ac.getParameter("userUuid");
-			crudHandler.handleDeleteAPIToken(ac, uuid);
-		});
+			String userUuid = ac.getParameter("userUuid");
+			String tokenUuid = ac.getParameter("tokenUuid");
+			crudHandler.handleDeleteAPIToken(ac, userUuid, tokenUuid);
+		}, isOrderedBlockingHandlers());
+
+		InternalEndpointRoute listEndpoint = createRoute();
+		listEndpoint.path("/:userUuid/token");
+		listEndpoint.setRAMLPath("/{userUuid}/token");
+		listEndpoint.addUriParameter("userUuid", "Uuid of the user.", USER_EDITOR_UUID);
+		listEndpoint.description(
+			"List tokens of the user. Requires UPDATE permission on the user.");
+		listEndpoint.method(GET);
+		listEndpoint.addQueryParameters(PagingParametersImpl.class);
+		listEndpoint.setMutating(false);
+		listEndpoint.produces(APPLICATION_JSON);
+		listEndpoint.exampleResponse(OK, userExamples.getAPITokenListResponse("Some API Token"), "API token list response");
+		listEndpoint.blockingHandler(rc -> {
+			InternalActionContext ac = wrap(rc);
+			String userUuid = ac.getParameter("userUuid");
+			crudHandler.handleListAPITokens(ac, userUuid);
+		}, false);
 	}
 
 	private void addReadPermissionHandler() {
@@ -105,7 +132,7 @@ public class UserEndpoint extends AbstractInternalEndpoint {
 		endpoint.setRAMLPath("/{userUuid}/permissions/{path}");
 		endpoint.addUriParameter("userUuid", "Uuid of the user.", USER_EDITOR_UUID);
 		endpoint.addUriParameter("path", "Path to the element from which the permissions should be loaded.", "projects/:projectUuid/schemas");
-		endpoint.description("Read the user permissions on the element that can be located by the specified path.");
+		endpoint.description("Read the user permissions on the element that can be located by the specified path. Requires READ permission on the user.");
 		endpoint.method(GET);
 		endpoint.produces(APPLICATION_JSON);
 		endpoint.exampleResponse(OK, userExamples.getUserPermissionResponse(), "Response which contains the loaded permissions.");
@@ -122,7 +149,7 @@ public class UserEndpoint extends AbstractInternalEndpoint {
 		endpoint.path("/:userUuid/reset_token");
 		endpoint.setRAMLPath("/{userUuid}/reset_token");
 		endpoint.addUriParameter("userUuid", "Uuid of the user.", USER_EDITOR_UUID);
-		endpoint.description("Return a one time token which can be used by any user to update a user (e.g.: Reset the password)");
+		endpoint.description("Return a one time token which can be used by any user to update a user (e.g.: Reset the password). Requires CREATE permission on the user.");
 		endpoint.method(POST);
 		endpoint.setMutating(true);
 		endpoint.produces(APPLICATION_JSON);
@@ -187,7 +214,7 @@ public class UserEndpoint extends AbstractInternalEndpoint {
 			InternalActionContext ac = wrap(rc);
 			String uuid = ac.getParameter("userUuid");
 			crudHandler.handleDelete(ac, uuid);
-		});
+		}, isOrderedBlockingHandlers());
 	}
 
 	private void addUpdateHandler() {
@@ -209,13 +236,13 @@ public class UserEndpoint extends AbstractInternalEndpoint {
 		endpoint.produces(APPLICATION_JSON);
 		endpoint.addQueryParameters(UserParametersImpl.class);
 		endpoint.exampleRequest(userExamples.getUserUpdateRequest("jdoe42"));
-		endpoint.exampleResponse(OK, userExamples.getUserResponse1("jdoe42"), "Updated user response.");
-		endpoint.events(USER_UPDATED);
+		endpoint.exampleResponse(OK, userExamples.getUserResponse1("jdoe42"), "Updated or new user response.");
+		endpoint.events(USER_CREATED, USER_UPDATED);
 		endpoint.blockingHandler(rc -> {
 			InternalActionContext ac = wrap(rc);
 			String uuid = ac.getParameter("userUuid");
 			crudHandler.handleUpdate(ac, uuid);
-		});
+		}, isOrderedBlockingHandlers());
 	}
 
 	private void addCreateHandler() {
@@ -232,6 +259,6 @@ public class UserEndpoint extends AbstractInternalEndpoint {
 		endpoint.blockingHandler(rc -> {
 			InternalActionContext ac = wrap(rc);
 			crudHandler.handleCreate(ac);
-		});
+		}, isOrderedBlockingHandlers());
 	}
 }

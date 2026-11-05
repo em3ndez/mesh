@@ -6,6 +6,10 @@ import static com.gentics.mesh.test.TestDataProvider.PROJECT_NAME;
 import static com.gentics.mesh.test.TestSize.FULL;
 import static io.netty.handler.codec.http.HttpResponseStatus.CONFLICT;
 
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+
+import org.assertj.core.api.Assertions;
 import org.junit.Test;
 
 import com.gentics.mesh.FieldUtil;
@@ -17,10 +21,19 @@ import com.gentics.mesh.core.db.Tx;
 import com.gentics.mesh.core.rest.node.NodeCreateRequest;
 import com.gentics.mesh.core.rest.node.NodeResponse;
 import com.gentics.mesh.core.rest.node.NodeUpdateRequest;
+import com.gentics.mesh.core.rest.schema.BinaryFieldSchema;
+import com.gentics.mesh.core.rest.schema.StringFieldSchema;
+import com.gentics.mesh.core.rest.schema.impl.BinaryFieldSchemaImpl;
+import com.gentics.mesh.core.rest.schema.impl.SchemaCreateRequest;
 import com.gentics.mesh.core.rest.schema.impl.SchemaReferenceImpl;
+import com.gentics.mesh.core.rest.schema.impl.SchemaResponse;
+import com.gentics.mesh.core.rest.schema.impl.StringFieldSchemaImpl;
 import com.gentics.mesh.parameter.impl.VersioningParametersImpl;
+import com.gentics.mesh.rest.client.MeshWebrootResponse;
 import com.gentics.mesh.test.MeshTestSetting;
 import com.gentics.mesh.test.context.AbstractMeshTest;
+
+import io.vertx.core.buffer.Buffer;
 
 @MeshTestSetting(testSize = FULL, startServer = true)
 public class NodeWebRootConflictEndpointTest extends AbstractMeshTest {
@@ -90,7 +103,7 @@ public class NodeWebRootConflictEndpointTest extends AbstractMeshTest {
 			create.getFields().put("teaser", createStringField("some name"));
 			create.getFields().put("slug", createStringField(conflictingName));
 			create.getFields().put("content", createStringField("Blessed mealtime!"));
-			client().createNode(PROJECT_NAME, create).blockingGet();
+			call(() -> client().createNode(PROJECT_NAME, create));
 
 			// try to create the new content with same slug
 			NodeCreateRequest create2 = new NodeCreateRequest();
@@ -103,6 +116,48 @@ public class NodeWebRootConflictEndpointTest extends AbstractMeshTest {
 			create2.getFields().put("content", createStringField("Blessed mealtime again!"));
 			call(() -> client().createNode(PROJECT_NAME, create2), CONFLICT, "node_conflicting_segmentfield_update", "slug", conflictingName);
 			return null;
+		});
+	}
+
+	@Test
+	public void testCreateCaseSensitivityOfWebrootPath() {
+		// do not run the test, when the databsae is not case sensitive
+		if (!testContext.getInstanceProvider().isCaseSensitive()) {
+			return;
+		}
+		String conflictingName = "filename.html";
+		HibNode parent = tx(() -> folder("2015"));
+		HibSchema contentSchema = tx(() -> schemaContainer("content"));
+
+		tx(() -> {
+			// create the initial content
+			NodeCreateRequest create = new NodeCreateRequest();
+			create.setParentNodeUuid(parent.getUuid());
+			create.setLanguage("en");
+			create.setSchema(new SchemaReferenceImpl().setName(contentSchema.getName()).setUuid(contentSchema.getUuid()));
+			create.getFields().put("title", createStringField("some title"));
+			create.getFields().put("teaser", createStringField("some name"));
+			create.getFields().put("slug", createStringField(conflictingName));
+			create.getFields().put("content", createStringField("Blessed mealtime!"));
+			NodeResponse response1 = call(() -> client().createNode(PROJECT_NAME, create));
+
+			// create the new content with same slug but different casing
+			NodeCreateRequest create2 = new NodeCreateRequest();
+			create2.setParentNodeUuid(parent.getUuid());
+			create2.setLanguage("en");
+			create2.setSchema(new SchemaReferenceImpl().setName(contentSchema.getName()).setUuid(contentSchema.getUuid()));
+			create2.getFields().put("title", createStringField("some other title"));
+			create2.getFields().put("teaser", createStringField("some other name"));
+			create2.getFields().put("slug", createStringField(conflictingName.toUpperCase()));
+			create2.getFields().put("content", createStringField("Blessed mealtime again!"));
+			NodeResponse response2 = call(() -> client().createNode(PROJECT_NAME, create2));
+
+			// check that both nodes can be retrieved via webroot path
+			MeshWebrootResponse webrootResponse1 = call(() -> client().webroot(PROJECT_NAME, "/News/2015/" + conflictingName));
+			Assertions.assertThat(webrootResponse1.getNodeResponse()).isEqualTo(response1);
+
+			MeshWebrootResponse webrootResponse2 = call(() -> client().webroot(PROJECT_NAME, "/News/2015/" + conflictingName.toUpperCase()));
+			Assertions.assertThat(webrootResponse2.getNodeResponse()).isEqualTo(response2);
 		});
 	}
 
@@ -449,5 +504,106 @@ public class NodeWebRootConflictEndpointTest extends AbstractMeshTest {
 		// 4. Publish conflicting content
 		call(() -> client().publishNode(PROJECT_NAME, otherNodeUuid), CONFLICT, "node_conflicting_segmentfield_publish", "slug",
 			conflictingName);
+	}
+
+	@Test
+	public void testBinaryNonSegmentFieldBreaksUniquenessNodeApi() throws IOException {
+		SchemaCreateRequest request = new SchemaCreateRequest();
+		request.setName("schema_" + System.currentTimeMillis());
+		request.setContainer(false);
+		request.setSegmentField("name");
+
+		StringFieldSchema nameFieldSchema = new StringFieldSchemaImpl();
+		nameFieldSchema.setName("name");
+		nameFieldSchema.setLabel("Name");
+		request.addField(nameFieldSchema);
+
+		BinaryFieldSchema binaryFieldSchema = new BinaryFieldSchemaImpl();
+		binaryFieldSchema.setName("binary");
+		binaryFieldSchema.setLabel("Binary Data");
+		request.addField(binaryFieldSchema);
+
+		SchemaResponse binContentSchema = call(() -> client().createSchema(request));
+
+		call(() -> client().assignSchemaToProject(PROJECT_NAME, binContentSchema.getUuid()));
+
+		// create the initial content
+		NodeCreateRequest create = new NodeCreateRequest();
+		create.setParentNodeUuid(folderUuid());
+		create.setLanguage("en");
+		create.setSchema(new SchemaReferenceImpl().setName(binContentSchema.getName()).setUuid(binContentSchema.getUuid()));
+		create.getFields().put("name", FieldUtil.createStringField("title_12345"));
+		NodeResponse node1 = call(() -> client().createNode(PROJECT_NAME, create));
+
+		// create the illegal content - node cannot appear with already used segment value
+		NodeCreateRequest illegalCreate = new NodeCreateRequest();
+		illegalCreate.setParentNodeUuid(folderUuid());
+		illegalCreate.setLanguage("en");
+		illegalCreate.setSchema(new SchemaReferenceImpl().setName(binContentSchema.getName()).setUuid(binContentSchema.getUuid()));
+		illegalCreate.getFields().put("name", FieldUtil.createStringField("title_12345"));
+		call(() -> client().createNode(PROJECT_NAME, illegalCreate), CONFLICT, "node_conflicting_segmentfield_update", "name", "title_12345");
+
+		// update binary field
+		Buffer buffer = getBuffer("/pictures/android-gps.jpg");
+		call(() -> client().updateNodeBinaryField(PROJECT_NAME, node1.getUuid(), "en", "0.1", "binary", new ByteArrayInputStream(buffer.getBytes()), buffer.length(), "test.jpg", "image/jpeg"));
+
+		// check the node still cannot appear with the same segment value
+		call(() -> client().createNode(PROJECT_NAME, illegalCreate), CONFLICT, "node_conflicting_segmentfield_update", "name", "title_12345");
+
+		// cleanup
+		call(() -> client().deleteNode(PROJECT_NAME, node1.getUuid()));
+		call(() -> client().unassignSchemaFromProject(PROJECT_NAME, binContentSchema.getUuid()));
+		call(() -> client().deleteSchema(binContentSchema.getUuid()));
+	}
+
+
+	@Test
+	public void testBinaryNonSegmentFieldBreaksUniquenessWebrootApi() throws IOException {
+		SchemaCreateRequest request = new SchemaCreateRequest();
+		request.setName("schema_" + System.currentTimeMillis());
+		request.setContainer(false);
+		request.setSegmentField("name");
+
+		StringFieldSchema nameFieldSchema = new StringFieldSchemaImpl();
+		nameFieldSchema.setName("name");
+		nameFieldSchema.setLabel("Name");
+		request.addField(nameFieldSchema);
+
+		BinaryFieldSchema binaryFieldSchema = new BinaryFieldSchemaImpl();
+		binaryFieldSchema.setName("binary");
+		binaryFieldSchema.setLabel("Binary Data");
+		request.addField(binaryFieldSchema);
+
+		SchemaResponse binContentSchema = call(() -> client().createSchema(request));
+
+		call(() -> client().assignSchemaToProject(PROJECT_NAME, binContentSchema.getUuid()));
+
+		// create the initial content
+		NodeCreateRequest create = new NodeCreateRequest();
+		create.setParentNodeUuid(folderUuid());
+		create.setLanguage("en");
+		create.setSchema(new SchemaReferenceImpl().setName(binContentSchema.getName()).setUuid(binContentSchema.getUuid()));
+		create.getFields().put("name", FieldUtil.createStringField("title_12345"));
+		NodeResponse node1 = call(() -> client().webrootCreate(PROJECT_NAME, "/title_12345", create));
+
+		// create the illegal content - node cannot appear with already used segment value
+		NodeCreateRequest illegalCreate = new NodeCreateRequest();
+		illegalCreate.setParentNodeUuid(folderUuid());
+		illegalCreate.setLanguage("en");
+		illegalCreate.setSchema(new SchemaReferenceImpl().setName(binContentSchema.getName()).setUuid(binContentSchema.getUuid()));
+		illegalCreate.getFields().put("name", FieldUtil.createStringField("title_12345"));
+		call(() -> client().webrootCreate(PROJECT_NAME, "/title_12345", illegalCreate), CONFLICT, "node_conflicting_segmentfield_update", "name", "title_12345");
+
+		// update binary field
+		Buffer buffer = getBuffer("/pictures/android-gps.jpg");
+		call(() -> client().updateNodeBinaryField(PROJECT_NAME, node1.getUuid(), "en", "0.1", "binary", new ByteArrayInputStream(buffer.getBytes()), buffer.length(), "test.jpg", "image/jpeg"));
+
+		// check the node still cannot appear with the same segment value
+		call(() -> client().webrootCreate(PROJECT_NAME, "/title_12345", illegalCreate), CONFLICT, "node_conflicting_segmentfield_update", "name", "title_12345");
+
+		// cleanup
+		call(() -> client().deleteNode(PROJECT_NAME, node1.getUuid()));
+		call(() -> client().unassignSchemaFromProject(PROJECT_NAME, binContentSchema.getUuid()));
+		call(() -> client().deleteSchema(binContentSchema.getUuid()));
 	}
 }

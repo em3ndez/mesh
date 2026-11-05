@@ -19,8 +19,8 @@ import com.gentics.mesh.core.migration.NodeMigration;
 import com.gentics.mesh.core.rest.job.JobWarningList;
 import com.gentics.mesh.core.rest.job.warning.ConflictWarning;
 import io.reactivex.Completable;
-import io.vertx.core.logging.Logger;
-import io.vertx.core.logging.LoggerFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * This class is responsible for starting a node migration from a job
@@ -59,7 +59,7 @@ public class NodeJobProcessor implements SingleJobProcessor {
 					}).doOnError(err -> {
 						db.tx(tx -> {
 							context.getStatus().error(err, "Error in node migration.");
-							tx.createBatch().add(handler.createEvent(job, tx, SCHEMA_MIGRATION_FINISHED, FAILED)).dispatch();
+							tx.batch().add(handler.createEvent(job, tx, SCHEMA_MIGRATION_FINISHED, FAILED)).dispatch();
 						});
 					});
 
@@ -81,7 +81,7 @@ public class NodeJobProcessor implements SingleJobProcessor {
 			}
 		});
 		db.tx(tx -> {
-			tx.createBatch().add(handler.createEvent(job, tx, SCHEMA_MIGRATION_FINISHED, COMPLETED)).dispatch();
+			tx.batch().add(handler.createEvent(job, tx, SCHEMA_MIGRATION_FINISHED, COMPLETED)).dispatch();
 		});
 	}
 }

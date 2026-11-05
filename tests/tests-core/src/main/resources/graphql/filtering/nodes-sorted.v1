@@ -1,0 +1,18 @@
+{
+	nodes(filter: {
+    schema: {is: folder} fields: {folder: {name: {isNull: false}}}
+  } sort: {fields: {folder: {name:DESCENDING}}} ) {
+    # [$.data.nodes.elements.length()=6]
+    elements {
+      uuid
+      edited
+    fields {
+     ... on folder {
+		  # [$.data.nodes.elements=<is-sorted-by:fields.name:desc>]
+		  name
+        }
+      }
+    }
+  }
+}
+# [$.errors=<is-undefined>]

@@ -6,13 +6,10 @@ import static com.gentics.mesh.event.Assignment.UNASSIGNED;
 import static io.netty.handler.codec.http.HttpResponseStatus.BAD_REQUEST;
 import static io.netty.handler.codec.http.HttpResponseStatus.INTERNAL_SERVER_ERROR;
 
-import java.util.Map;
 import java.util.function.Consumer;
 import java.util.stream.Stream;
 
-import com.gentics.mesh.context.BulkActionContext;
 import com.gentics.mesh.context.InternalActionContext;
-import com.gentics.mesh.core.data.branch.HibBranch;
 import com.gentics.mesh.core.data.job.HibJob;
 import com.gentics.mesh.core.data.schema.HibFieldSchemaElement;
 import com.gentics.mesh.core.data.schema.HibFieldSchemaVersionElement;
@@ -37,7 +34,7 @@ public interface PersistingContainerDao<
 			SC extends HibFieldSchemaElement<R, RM, RE, SC, SCV>, 
 			SCV extends HibFieldSchemaVersionElement<R, RM, RE, SC, SCV>, 
 			M extends FieldSchemaContainer
-		> extends PersistingDaoGlobal<SC>, ContainerDao<R, RM, RE, SC, SCV, M> {
+		> extends PersistingDaoGlobal<SC>, ContainerDao<R, RM, RE, SC, SCV, M>, PersistingNamedEntityDao<SC> {
 
 	/**
 	 * Get the final type of the version persistence entity of the dao.
@@ -78,11 +75,6 @@ public interface PersistingContainerDao<
 	};
 
 	@Override
-	default Map<HibBranch, SCV> findReferencedBranches(SC schema) {
-		return schema.findReferencedBranches();
-	}
-
-	@Override
 	default SCV applyChanges(SCV version, InternalActionContext ac, SchemaChangesListModel listOfChanges,
 			EventQueueBatch batch) {
 		if (listOfChanges.getChanges().isEmpty()) {
@@ -120,6 +112,7 @@ public interface PersistingContainerDao<
 			}
 			v.setSchemaContainer(version.getSchemaContainer());
 			v.setName(resultingSchema.getName());
+			v.setNoIndex(resultingSchema.getNoIndex());
 		});
 		
 		version.getSchemaContainer().setName(resultingSchema.getName());
@@ -148,10 +141,10 @@ public interface PersistingContainerDao<
 	}
 
 	@Override
-	default void deleteChange(HibSchemaChange<? extends FieldSchemaContainer> change, BulkActionContext bc) {
+	default void deleteChange(HibSchemaChange<? extends FieldSchemaContainer> change) {
 		HibSchemaChange<?> next = change.getNextChange();
 		if (next != null) {
-			deleteChange(next, bc);
+			deleteChange(next);
 		}
 		CommonTx.get().delete(change);
 	}
@@ -167,20 +160,20 @@ public interface PersistingContainerDao<
 	}
 
 	@Override
-	default void deleteVersion(SCV version, BulkActionContext bac) {
+	default void deleteVersion(SCV version) {
 		CommonTx ctx = CommonTx.get();
-		generateUnassignEvents(version).forEach(bac::add);
+		generateUnassignEvents(version).forEach(evt -> ctx.batch().add(evt));
 		// Delete change
 		HibSchemaChange<?> change = version.getNextChange();
 		if (change != null) {
-			deleteChange(change, bac);
+			deleteChange(change);
 		}
 		// Delete referenced jobs
 		for (HibJob job : version.referencedJobsViaFrom()) {
-			ctx.jobDao().delete(job, bac);
+			ctx.jobDao().delete(job);
 		}
 		for (HibJob job : version.referencedJobsViaTo()) {
-			ctx.jobDao().delete(job, bac);
+			ctx.jobDao().delete(job);
 		}
 		beforeVersionDeletedFromDatabase(version);
 		// Delete version

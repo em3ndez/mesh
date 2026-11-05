@@ -5,8 +5,11 @@ import static com.gentics.mesh.core.rest.MeshEvent.ROLE_PERMISSIONS_CHANGED;
 import static org.apache.commons.lang3.StringUtils.isEmpty;
 
 import java.util.Arrays;
-import java.util.HashSet;
 import java.util.Set;
+import java.util.TreeSet;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.gentics.mesh.context.InternalActionContext;
 import com.gentics.mesh.context.NodeMigrationActionContext;
@@ -31,9 +34,6 @@ import com.gentics.mesh.core.rest.event.role.PermissionChangedProjectElementEven
 import com.gentics.mesh.parameter.GenericParameters;
 import com.gentics.mesh.parameter.value.FieldsSet;
 import com.gentics.mesh.util.ETag;
-
-import io.vertx.core.logging.Logger;
-import io.vertx.core.logging.LoggerFactory;
 
 /**
  * A core element is a public element which is also usually accessible via REST.
@@ -117,7 +117,7 @@ public interface HibCoreElement<T extends RestModel> extends HibTransformableEle
 				if (editor != null) {
 					model.setEditor(editor.transformToReference());
 				} else {
-					log.error("The object {" + getClass().getSimpleName() + "} with uuid {" + getUuid() + "} has no editor. Omitting editor field");
+					log.warn("The object {" + getClass().getSimpleName() + "} with uuid {" + getUuid() + "} has no editor. Omitting editor field");
 				}
 			}
 
@@ -163,7 +163,7 @@ public interface HibCoreElement<T extends RestModel> extends HibTransformableEle
 		keyBuilder.append("fields:");
 		GenericParameters generic = ac.getGenericParameters();
 		FieldsSet fields = generic.getFields();
-		fields.forEach(keyBuilder::append);
+		fields.stream().sorted().forEach(keyBuilder::append);
 
 		/**
 		 * permissions (&roleUuid query parameter aware)
@@ -175,7 +175,7 @@ public interface HibCoreElement<T extends RestModel> extends HibTransformableEle
 			HibRole role = roleDao.loadObjectByUuid(ac, roleUuid, READ_PERM);
 			if (role != null) {
 				Set<InternalPermission> permSet = roleDao.getPermissions(role, this);
-				Set<String> humanNames = new HashSet<>();
+				Set<String> humanNames = new TreeSet<>();
 				for (InternalPermission permission : permSet) {
 					humanNames.add(permission.getRestPerm().getName());
 				}

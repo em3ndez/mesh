@@ -6,16 +6,19 @@ import static com.gentics.mesh.test.ClientHelper.call;
 import static com.gentics.mesh.test.ElasticsearchTestMode.CONTAINER_ES6;
 import static io.netty.handler.codec.http.HttpResponseStatus.FORBIDDEN;
 import static io.netty.handler.codec.http.HttpResponseStatus.SERVICE_UNAVAILABLE;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 import static org.junit.Assert.assertEquals;
 
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import org.junit.Before;
+import org.junit.Ignore;
+import org.junit.Test;
+
 import com.gentics.elasticsearch.client.ElasticsearchClient;
 import com.gentics.elasticsearch.client.HttpErrorException;
-import com.gentics.mesh.context.impl.BulkActionContextImpl;
-import com.gentics.mesh.context.impl.DummyBulkActionContext;
 import com.gentics.mesh.core.data.HibNodeFieldContainer;
 import com.gentics.mesh.core.data.dao.ContentDao;
 import com.gentics.mesh.core.data.dao.PersistingMicroschemaDao;
@@ -50,20 +53,16 @@ import com.gentics.mesh.core.rest.schema.impl.SchemaModelImpl;
 import com.gentics.mesh.core.rest.schema.impl.SchemaResponse;
 import com.gentics.mesh.core.rest.search.EntityMetrics;
 import com.gentics.mesh.core.rest.user.UserResponse;
-import com.gentics.mesh.event.EventQueueBatch;
 import com.gentics.mesh.parameter.impl.NodeParametersImpl;
 import com.gentics.mesh.test.MeshTestSetting;
 import com.gentics.mesh.test.TestSize;
 import com.gentics.mesh.test.context.AbstractMeshTest;
 import com.gentics.mesh.test.helper.ExpectedEvent;
 import com.gentics.mesh.test.helper.UnexpectedEvent;
+
 import io.netty.handler.codec.http.HttpResponseStatus;
 import io.reactivex.Flowable;
 import io.vertx.core.json.JsonObject;
-import org.junit.Before;
-import org.junit.Ignore;
-import org.junit.Test;
-import org.mockito.Mockito;
 /**
  * Test differential sync of elasticsearch.
  */
@@ -118,6 +117,9 @@ public class BasicIndexSyncTest extends AbstractMeshTest {
 			for (int i = 0; i < 400; i++) {
 				tx.userDao().create("user_" + i, user(), null);
 			}
+
+			// suppress publishing of events
+			CommonTx.get().data().suppressEventQueueBatch();
 		});
 		syncIndex();
 		assertMetrics("user", 400, 0, 0);
@@ -125,6 +127,9 @@ public class BasicIndexSyncTest extends AbstractMeshTest {
 		// Assert update
 		tx(() -> {
 			user().setUsername("updated");
+
+			// suppress publishing of events
+			CommonTx.get().data().suppressEventQueueBatch();
 		});
 		syncIndex();
 		assertMetrics("user", 0, 1, 0);
@@ -133,6 +138,9 @@ public class BasicIndexSyncTest extends AbstractMeshTest {
 		tx(tx -> {
 			PersistingUserDao userDao = ((CommonTx) tx).userDao();
 			userDao.deletePersisted(userDao.findByName("user_3"));
+
+			// suppress publishing of events
+			CommonTx.get().data().suppressEventQueueBatch();
 		});
 		syncIndex();
 		assertMetrics("user", 0, 0, 1);
@@ -145,6 +153,9 @@ public class BasicIndexSyncTest extends AbstractMeshTest {
 			for (int i = 0; i < 400; i++) {
 				tx.groupDao().create("group_" + i, user(), null);
 			}
+
+			// suppress publishing of events
+			CommonTx.get().data().suppressEventQueueBatch();
 		});
 		syncIndex();
 		assertMetrics("group", 400, 0, 0);
@@ -152,6 +163,9 @@ public class BasicIndexSyncTest extends AbstractMeshTest {
 		// Assert update
 		tx(() -> {
 			Tx.get().groupDao().findByUuid(group().getUuid()).setName("updated");
+
+			// suppress publishing of events
+			CommonTx.get().data().suppressEventQueueBatch();
 		});
 		syncIndex();
 		assertMetrics("group", 0, 1, 0);
@@ -160,6 +174,9 @@ public class BasicIndexSyncTest extends AbstractMeshTest {
 		tx(tx -> {
 			HibGroup group3 = tx.groupDao().findByName("group_3");
 			CommonTx.get().groupDao().deletePersisted(group3);
+
+			// suppress publishing of events
+			CommonTx.get().data().suppressEventQueueBatch();
 		});
 		syncIndex();
 		assertMetrics("group", 0, 0, 1);
@@ -172,6 +189,9 @@ public class BasicIndexSyncTest extends AbstractMeshTest {
 			for (int i = 0; i < 400; i++) {
 				tx.roleDao().create("role_" + i, user(), null);
 			}
+
+			// suppress publishing of events
+			CommonTx.get().data().suppressEventQueueBatch();
 		});
 		syncIndex();
 		assertMetrics("role", 400, 0, 0);
@@ -179,6 +199,9 @@ public class BasicIndexSyncTest extends AbstractMeshTest {
 		// Assert update
 		tx(tx -> {
 			tx.roleDao().findByUuid(role().getUuid()).setName("updated");
+
+			// suppress publishing of events
+			CommonTx.get().data().suppressEventQueueBatch();
 		});
 		syncIndex();
 		assertMetrics("role", 0, 1, 0);
@@ -186,6 +209,9 @@ public class BasicIndexSyncTest extends AbstractMeshTest {
 		// Assert deletion
 		tx(tx -> {
 			tx.roleDao().findByName("role_3").removeElement();
+
+			// suppress publishing of events
+			CommonTx.get().data().suppressEventQueueBatch();
 		});
 		syncIndex();
 		assertMetrics("role", 0, 0, 1);
@@ -200,6 +226,9 @@ public class BasicIndexSyncTest extends AbstractMeshTest {
 			for (int i = 0; i < 400; i++) {
 				tagDao.create(tagFamily("colors"), "tag_" + i, project(), user());
 			}
+
+			// suppress publishing of events
+			CommonTx.get().data().suppressEventQueueBatch();
 		});
 		syncIndex();
 		// 400: The additional tags needs to be added to the index
@@ -209,6 +238,9 @@ public class BasicIndexSyncTest extends AbstractMeshTest {
 		// Assert update
 		tx(tx -> {
 			tx.tagDao().findByUuid(tag("red").getUuid()).setName("updated");
+
+			// suppress publishing of events
+			CommonTx.get().data().suppressEventQueueBatch();
 		});
 		syncIndex();
 		assertMetrics("tag", 0, 1, 0);
@@ -218,6 +250,9 @@ public class BasicIndexSyncTest extends AbstractMeshTest {
 			HibTagFamily tagFamily = tagFamily("colors");
 			HibTag tag = tagDao.findByName(tagFamily, "tag_3");
 			tx.<CommonTx>unwrap().tagDao().deletePersisted(tag);
+
+			// suppress publishing of events
+			CommonTx.get().data().suppressEventQueueBatch();
 		});
 		syncIndex();
 		assertMetrics("tag", 0, 0, 1);
@@ -234,6 +269,9 @@ public class BasicIndexSyncTest extends AbstractMeshTest {
 			for (int i = 0; i < 400; i++) {
 				ctx.tagFamilyDao().create(project, "tagfamily_" + i, user);
 			}
+
+			// suppress publishing of events
+			CommonTx.get().data().suppressEventQueueBatch();
 		});
 		syncIndex();
 		// 400: The additional tag families need to be added to the index
@@ -244,6 +282,9 @@ public class BasicIndexSyncTest extends AbstractMeshTest {
 		// Assert update
 		tx((tx) -> {
 			tx.tagFamilyDao().findByUuid(tagFamily("colors").getUuid()).setName("updated");
+
+			// suppress publishing of events
+			CommonTx.get().data().suppressEventQueueBatch();
 		});
 		syncIndex();
 		assertMetrics("tagfamily", 0, 1, 0);
@@ -253,6 +294,9 @@ public class BasicIndexSyncTest extends AbstractMeshTest {
 			PersistingTagFamilyDao tagFamilyDao = Tx.get().<CommonTx>unwrap().tagFamilyDao();
 			HibTagFamily tagfamily_3 = tagFamilyDao.findByName(project(), "tagfamily_3");
 			tagFamilyDao.deletePersisted(project(), tagfamily_3);
+
+			// suppress publishing of events
+			CommonTx.get().data().suppressEventQueueBatch();
 		});
 		syncIndex();
 		assertMetrics("tagfamily", 0, 0, 1);
@@ -277,6 +321,9 @@ public class BasicIndexSyncTest extends AbstractMeshTest {
 		// Assert update
 		tx((tx) -> {
 			tx.projectDao().findByUuid(project().getUuid()).setName("updated");
+
+			// suppress publishing of events
+			CommonTx.get().data().suppressEventQueueBatch();
 		});
 		boot().globalCacheClear();
 		syncIndex();
@@ -285,9 +332,10 @@ public class BasicIndexSyncTest extends AbstractMeshTest {
 		// Now manually delete the project
 		tx(tx -> {
 			HibProject project = tx.projectDao().findByName("project_2");
-			BulkActionContextImpl context = Mockito.mock(BulkActionContextImpl.class);
-			Mockito.when(context.batch()).thenReturn(Mockito.mock(EventQueueBatch.class));
-			tx.projectDao().delete(project, context);
+			tx.projectDao().delete(project);
+
+			// suppress publishing of events
+			CommonTx.get().data().suppressEventQueueBatch();
 		});
 		boot().globalCacheClear();
 		// Assert that the deletion was detected
@@ -301,6 +349,9 @@ public class BasicIndexSyncTest extends AbstractMeshTest {
 		tx(tx -> {
 			HibNode node = folder("2015");
 			tx.contentDao().createFieldContainer(node, german(), initialBranch(), user());
+
+			// suppress publishing of events
+			CommonTx.get().data().suppressEventQueueBatch();
 		});
 		syncIndex();
 		assertInsertedMetrics(call(() -> client().searchStatus()).getMetrics().get("node"), 1);
@@ -316,8 +367,6 @@ public class BasicIndexSyncTest extends AbstractMeshTest {
 		});
 		syncIndex();
 		EntityMetrics metrics = call(() -> client().searchStatus()).getMetrics().get("node");
-		// orientdb implementation is making some unneeded document updates compared to the mdm implementation.
-		// to make the test work for both implementations, we just check that we have at least one document synced.
 		assertThat(metrics.getUpdate().getSynced()).isGreaterThanOrEqualTo(1);
 		assertThat(metrics.getUpdate().getPending()).isEqualTo(0);
 
@@ -325,7 +374,10 @@ public class BasicIndexSyncTest extends AbstractMeshTest {
 		tx(tx -> {
 			ContentDao contentDao = tx.contentDao();
 			HibNodeFieldContainer draft = contentDao.getFieldContainer(folder("2015"), german(), latestBranch(), ContainerType.DRAFT);
-			contentDao.delete(draft, new DummyBulkActionContext());
+			contentDao.delete(draft);
+
+			// suppress publishing of events
+			CommonTx.get().data().suppressEventQueueBatch();
 		});
 		syncIndex();
 		assertDeletedMetrics(call(() -> client().searchStatus()).getMetrics().get("node"), 1);
@@ -341,6 +393,9 @@ public class BasicIndexSyncTest extends AbstractMeshTest {
 				model.setName("schema_" + i);
 				schemaDao.create(model, user());
 			}
+
+			// suppress publishing of events
+			CommonTx.get().data().suppressEventQueueBatch();
 		});
 		syncIndex();
 		assertMetrics("schema", 400, 0, 0);
@@ -350,6 +405,9 @@ public class BasicIndexSyncTest extends AbstractMeshTest {
 		waitForSearchIdleEvent();
 		tx(tx -> {
 			tx.schemaDao().findByUuid(response.getUuid()).setName("updated");
+
+			// suppress publishing of events
+			CommonTx.get().data().suppressEventQueueBatch();
 		});
 		syncIndex();
 		assertMetrics("schema", 0, 1, 0);
@@ -358,8 +416,11 @@ public class BasicIndexSyncTest extends AbstractMeshTest {
 		tx(tx -> {
 			PersistingSchemaDao schemaDao = ((CommonTx) tx).schemaDao();
 			HibSchema schema = schemaDao.findByName("schema_3");
-			schemaDao.deleteVersion(schema.getLatestVersion(), new DummyBulkActionContext());
+			schemaDao.deleteVersion(schema.getLatestVersion());
 			schemaDao.deletePersisted(schema);
+
+			// suppress publishing of events
+			CommonTx.get().data().suppressEventQueueBatch();
 		});
 		syncIndex();
 		assertMetrics("schema", 0, 0, 1);
@@ -374,6 +435,9 @@ public class BasicIndexSyncTest extends AbstractMeshTest {
 				model.setName("microschema_" + i);
 				createMicroschema(model);
 			}
+
+			// suppress publishing of events
+			CommonTx.get().data().suppressEventQueueBatch();
 		});
 		syncIndex();
 		assertMetrics("microschema", 400, 0, 0);
@@ -381,6 +445,9 @@ public class BasicIndexSyncTest extends AbstractMeshTest {
 		// Assert update
 		tx(tx -> {
 			tx.microschemaDao().findByName("microschema_100").setName("updated");
+
+			// suppress publishing of events
+			CommonTx.get().data().suppressEventQueueBatch();
 		});
 		syncIndex();
 		assertMetrics("microschema", 0, 1, 0);
@@ -389,8 +456,11 @@ public class BasicIndexSyncTest extends AbstractMeshTest {
 		tx(tx -> {
 			PersistingMicroschemaDao microschemaDao = ((CommonTx) tx).microschemaDao();
 			HibMicroschema microschema = microschemaDao.findByName("microschema_101");
-			microschemaDao.deleteVersion(microschema.getLatestVersion(), new DummyBulkActionContext());
+			microschemaDao.deleteVersion(microschema.getLatestVersion());
 			microschemaDao.deletePersisted(microschema);
+
+			// suppress publishing of events
+			CommonTx.get().data().suppressEventQueueBatch();
 		});
 		syncIndex();
 		assertMetrics("microschema", 0, 0, 1);

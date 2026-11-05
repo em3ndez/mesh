@@ -5,7 +5,7 @@
     "data" : {
       "type" : "array",
       "required" : true,
-      "description" : "Array which contains the found elements.",
+      "description" : "Array which contains the elements.",
       "items" : {
         "type" : "object",
         "id" : "urn:jsonschema:com:gentics:mesh:core:rest:project:ProjectResponse",
@@ -92,15 +92,39 @@
                   "versionUuid" : {
                     "type" : "string"
                   },
+                  "uuid" : {
+                    "type" : "string"
+                  },
                   "name" : {
                     "type" : "string"
                   },
                   "set" : {
                     "type" : "boolean"
-                  },
-                  "uuid" : {
-                    "type" : "string"
                   }
+                }
+              }
+            }
+          },
+          "languages" : {
+            "type" : "array",
+            "description" : "Project's languages.",
+            "items" : {
+              "type" : "object",
+              "id" : "urn:jsonschema:com:gentics:mesh:core:rest:lang:LanguageResponse",
+              "properties" : {
+                "uuid" : {
+                  "type" : "string",
+                  "required" : true,
+                  "description" : "Uuid of the element"
+                },
+                "name" : {
+                  "type" : "string"
+                },
+                "nativeName" : {
+                  "type" : "string"
+                },
+                "languageTag" : {
+                  "type" : "string"
                 }
               }
             }
@@ -161,7 +185,6 @@
         },
         "perPage" : {
           "type" : "integer",
-          "required" : true,
           "description" : "Number of elements which can be included in a single page."
         },
         "pageCount" : {

@@ -26,4 +26,16 @@ public @interface EnvironmentVariable {
 	 * @return
 	 */
 	String name();
+
+	/**
+	 * Whether this variable is sensitive (should not be logged)
+	 * @return
+	 */
+	boolean isSensitive() default false;
+
+	/**
+	 * Whether this variable should not document its YAML field
+	 * @return
+	 */
+	boolean isNoField() default false;
 }

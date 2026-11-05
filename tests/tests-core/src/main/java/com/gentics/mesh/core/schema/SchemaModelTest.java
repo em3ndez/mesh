@@ -75,7 +75,7 @@ public class SchemaModelTest {
 			JsonUtil.readValue(json.encodePrettily(), SchemaModelImpl.class);
 			fail("An error should have been thrown");
 		} catch (GenericRestException e) {
-			assertThat(e).matches("error_json_structure_invalid", "8", "4", "fields", "Missing type property for field {Name}");
+			assertThat(e).matches("error_json_structure_invalid", "9", "3", "fields", "Missing type property for field {Name}");
 		}
 	}
 
@@ -264,6 +264,17 @@ public class SchemaModelTest {
 		expectErrorOnValidate(schema, "schema_error_duplicate_field_name", "name");
 	}
 
+	@Test
+	public void testCaseSensitivityDuplicateSchemaName() {
+		SchemaModel schema = new SchemaModelImpl();
+		schema.setName("test");
+		schema.setSegmentField("name");
+		schema.setDisplayField("name");
+		schema.addField(FieldUtil.createStringFieldSchema("name"));
+		schema.addField(FieldUtil.createStringFieldSchema("Name"));
+		expectErrorOnValidate(schema, "schema_error_duplicate_field_name", "Name");
+	}
+
 	/**
 	 * The display field must always point to a string field.
 	 */
@@ -329,7 +340,7 @@ public class SchemaModelTest {
 		schema.setName("test");
 		schema.setDescription("some blub");
 		schema.addField(FieldUtil.createListFieldSchema("list").setListType("binary"));
-		expectErrorOnValidate(schema, "microschema_error_field_type_not_allowed", "list", "list:binary");
+		expectErrorOnValidate(schema, "schema_error_list_type_invalid", "binary", "list");
 	}
 
 }

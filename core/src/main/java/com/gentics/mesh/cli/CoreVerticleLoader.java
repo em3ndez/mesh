@@ -6,6 +6,9 @@ import javax.inject.Inject;
 import javax.inject.Provider;
 import javax.inject.Singleton;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.gentics.mesh.core.verticle.job.JobWorkerVerticleImpl;
 import com.gentics.mesh.etc.config.MeshOptions;
 import com.gentics.mesh.etc.config.search.ElasticSearchOptions;
@@ -13,12 +16,12 @@ import com.gentics.mesh.monitor.MonitoringServerVerticle;
 import com.gentics.mesh.rest.RestAPIVerticle;
 import com.gentics.mesh.search.verticle.ElasticsearchProcessVerticle;
 import com.gentics.mesh.util.RxUtil;
+import com.gentics.mesh.verticle.BinaryCheckVerticle;
 
 import io.reactivex.Completable;
 import io.vertx.core.DeploymentOptions;
+import io.vertx.core.ThreadingModel;
 import io.vertx.core.json.JsonObject;
-import io.vertx.core.logging.Logger;
-import io.vertx.core.logging.LoggerFactory;
 import io.vertx.reactivex.core.Vertx;
 
 /**
@@ -29,35 +32,41 @@ public class CoreVerticleLoader {
 
 	private static Logger log = LoggerFactory.getLogger(CoreVerticleLoader.class);
 
-	@Inject
-	public Provider<RestAPIVerticle> restVerticle;
+	protected final Provider<RestAPIVerticle> restVerticle;
 
-	@Inject
-	public Provider<MonitoringServerVerticle> monitoringServerVerticle;
+	protected final Provider<MonitoringServerVerticle> monitoringServerVerticle;
 
-	@Inject
-	public JobWorkerVerticleImpl jobWorkerVerticle;
+	protected final JobWorkerVerticleImpl jobWorkerVerticle;
 
-	@Inject
-	public Provider<ElasticsearchProcessVerticle> elasticsearchProcessVerticleProvider;
+	protected final BinaryCheckVerticle binaryCheckVerticle;
+
+	protected final Provider<ElasticsearchProcessVerticle> elasticsearchProcessVerticleProvider;
 	private ElasticsearchProcessVerticle elasticsearchProcessVerticle;
 
-	@Inject
-	public MeshOptions meshOptions;
+	protected final MeshOptions meshOptions;
 
 	private final Vertx rxVertx;
 	private String searchVerticleId;
 
 	@Inject
-	public CoreVerticleLoader(Vertx rxVertx) {
+	public CoreVerticleLoader(Vertx rxVertx, Provider<RestAPIVerticle> restVerticle,
+			Provider<MonitoringServerVerticle> monitoringServerVerticle, JobWorkerVerticleImpl jobWorkerVerticle,
+			BinaryCheckVerticle binaryCheckVerticle, Provider<ElasticsearchProcessVerticle> elasticsearchProcessVerticleProvider,
+			MeshOptions meshOptions) {
 		this.rxVertx = rxVertx;
+		this.restVerticle = restVerticle;
+		this.monitoringServerVerticle = monitoringServerVerticle;
+		this.jobWorkerVerticle = jobWorkerVerticle;
+		this.binaryCheckVerticle = binaryCheckVerticle;
+		this.elasticsearchProcessVerticleProvider = elasticsearchProcessVerticleProvider;
+		this.meshOptions = meshOptions;
 	}
 
 	private JsonObject defaultConfig;
 
 	/**
 	 * Load verticles that are configured within the mesh configuration.
-	 * 
+	 *
 	 * @param initialProjects
 	 */
 	public Completable loadVerticles(List<String> initialProjects) {
@@ -70,6 +79,7 @@ public class CoreVerticleLoader {
 			deployRestVerticle(),
 			deployMonitoringVerticle(),
 			deployJobWorkerVerticle(),
+			deployBinaryCheckVerticle(),
 			deploySearchVerticle());
 	}
 
@@ -94,8 +104,12 @@ public class CoreVerticleLoader {
 		// the verticle is not deployed as worker verticle (any more). See comments of AbstractJobVerticle for details
 		return rxVertx.rxDeployVerticle(jobWorkerVerticle, new DeploymentOptions()
 			.setInstances(1)
-			.setWorker(false))
-			.ignoreElement();
+			.setThreadingModel(ThreadingModel.WORKER))
+				.ignoreElement();
+	}
+
+	private Completable deployBinaryCheckVerticle() {
+		return rxVertx.rxDeployVerticle(binaryCheckVerticle, new DeploymentOptions().setInstances(1)).ignoreElement();
 	}
 
 	private Completable deploySearchVerticle() {
@@ -115,14 +129,31 @@ public class CoreVerticleLoader {
 	}
 
 	/**
-	 * Dedeploy the serarch verticle.
-	 * 
+	 * Undeploy search verticle
+	 *
 	 * @return
 	 */
-	public Completable redeploySearchVerticle() {
+	public Completable undeploySearchVerticle() {
 		return RxUtil.fromNullable(searchVerticleId)
 			.flatMapCompletable(rxVertx::rxUndeploy)
-			.andThen(deploySearchVerticle());
+			.andThen(resetSearchVerticle());
+	}
+
+	/**
+	 * Redeploy the search verticle, if it is not deployed
+	 * @return completable
+	 */
+	public Completable redeploySearchVerticle() {
+		if (searchVerticleId == null) {
+			return deploySearchVerticle();
+		} else {
+			return Completable.complete();
+		}
+	}
+
+	private Completable resetSearchVerticle() {
+		searchVerticleId = null;
+		return Completable.complete();
 	}
 
 	public ElasticsearchProcessVerticle getSearchVerticle() {

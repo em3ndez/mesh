@@ -5,7 +5,7 @@ import java.util.function.Predicate;
 import javax.inject.Inject;
 import javax.inject.Singleton;
 
-import com.gentics.mesh.context.BulkActionContext;
+import com.gentics.graphqlfilter.filter.operation.FilterOperation;
 import com.gentics.mesh.context.InternalActionContext;
 import com.gentics.mesh.core.action.DAOActionContext;
 import com.gentics.mesh.core.action.ProjectDAOActions;
@@ -69,9 +69,9 @@ public class ProjectDAOActionsImpl implements ProjectDAOActions {
 	}
 
 	@Override
-	public void delete(Tx tx, HibProject project, BulkActionContext bac) {
+	public void delete(Tx tx, HibProject project) {
 		ProjectDao projectDao = tx.projectDao();
-		projectDao.delete(project, bac);
+		projectDao.delete(project);
 	}
 
 	@Override
@@ -92,4 +92,8 @@ public class ProjectDAOActionsImpl implements ProjectDAOActions {
 		return projectDao.getETag(project, ac);
 	}
 
+	@Override
+	public Page<? extends HibProject> loadAll(DAOActionContext ctx, PagingParameters pagingInfo, FilterOperation<?> extraFilter) {
+		return ctx.tx().projectDao().findAll(ctx.ac(), pagingInfo, extraFilter);
+	}
 }

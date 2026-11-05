@@ -1,6 +1,7 @@
 package com.gentics.mesh.assertj.impl;
 
 import static com.gentics.mesh.MeshVersion.CURRENT_API_BASE_PATH;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
@@ -9,13 +10,21 @@ import static org.junit.Assert.fail;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Comparator;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Scanner;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
+import org.apache.commons.lang3.StringUtils;
 import org.assertj.core.api.AbstractAssert;
 import org.jetbrains.annotations.NotNull;
 
@@ -24,6 +33,7 @@ import com.gentics.mesh.util.UUIDUtil;
 import com.google.common.collect.ImmutableMap;
 import com.jayway.jsonpath.JsonPath;
 import com.jayway.jsonpath.PathNotFoundException;
+import com.jayway.jsonpath.spi.json.GsonJsonProvider;
 
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
@@ -33,6 +43,7 @@ public class JsonObjectAssert extends AbstractAssert<JsonObjectAssert, JsonObjec
 	 * Key to check
 	 */
 	protected String key;
+	protected Comparator<String> sortComparator = (a,b) -> 0;
 
 	private static Map<String, String> staticVariables = ImmutableMap.<String, String>builder()
 			.put("CURRENT_API_BASE_PATH", CURRENT_API_BASE_PATH)
@@ -40,12 +51,19 @@ public class JsonObjectAssert extends AbstractAssert<JsonObjectAssert, JsonObjec
 
 	private Map<String, String> dynamicVariables = new HashMap<>();
 
+	private static final String SORT_PATTERN = "<is-sorted-by:(?<id>[a-zA-Z0-9\\._\\-]*):(?<ord>asc|desc)>";
+
 	public JsonObjectAssert(JsonObject actual) {
 		super(actual, JsonObjectAssert.class);
 	}
 
 	public JsonObjectAssert key(String key) {
 		this.key = key;
+		return this;
+	}
+
+	public JsonObjectAssert withSortComparator(Comparator<String> comparator) {
+		this.sortComparator = comparator;
 		return this;
 	}
 
@@ -77,11 +95,31 @@ public class JsonObjectAssert extends AbstractAssert<JsonObjectAssert, JsonObjec
 		return this;
 	}
 
+	@SuppressWarnings("unchecked")
 	public JsonObjectAssert has(String path, String value, String msg) {
 		try {
 			Object actualValue = getByPath(path);
-			String actualStringRep = String.valueOf(actualValue);
-			assertEquals("Value for property on path {" + path + "} did not match: " + msg, value, actualStringRep);
+			if (actualValue instanceof Collection<?>) {
+				Collection<Object> actualCollection = (Collection<Object>) actualValue;
+
+				if (StringUtils.startsWith(value, "[") && StringUtils.endsWith(value, "]")) {
+					value = StringUtils.removeStart(value, "[");
+					value = StringUtils.removeEnd(value, "]");
+					String[] valueParts = StringUtils.split(value, ",");
+					for (int i = 0; i < valueParts.length; i++) {
+						valueParts[i] = StringUtils.trim(valueParts[i]);
+					}
+					List<String> values = Arrays.asList(valueParts);
+					assertThat(actualCollection).as("Value for property on path {" + path + "}").containsOnlyElementsOf(values);
+				} else {
+					fail("Expected value for path {" + path + "} should be an array (eclosed by '[' and ']') but was {"
+							+ value + "}");
+				}
+
+			} else {
+				String actualStringRep = String.valueOf(actualValue);
+				assertEquals("Value for property on path {" + path + "} did not match: " + msg, value, actualStringRep);
+			}
 		} catch (PathNotFoundException e) {
 			fail("Could not find property for path {" + path + "} - Json is:\n--snip--\n" + actual.encodePrettily() + "\n--snap--\n" + msg);
 		}
@@ -202,8 +240,50 @@ public class JsonObjectAssert extends AbstractAssert<JsonObjectAssert, JsonObjec
 			pathIsDate(path, msg);
 		} else if ("<is-undefined>".equals(value)) {
 			pathIsUndefined(path, msg);
+		} else if ("<is-empty>".equals(value)) {
+			pathIsEmpty(path, msg);
+		} else if (Pattern.matches(SORT_PATTERN, value)) {
+			Matcher matcher = Pattern.compile(SORT_PATTERN).matcher(value);
+			assert matcher.matches();
+			String sortBy = matcher.group("id");
+			String order = matcher.group("ord");
+			pathMustBeSorted(path, sortBy, order, msg);
 		} else {
 			has(path, replaceVariables(value), msg);
+		}
+		return this;
+	}
+
+	public JsonObjectAssert pathMustBeSorted(String path, String sortBy, String order, String msg) {
+		try {
+			String object = actual.toString();
+			com.google.gson.JsonArray arr = JsonPath.using(new GsonJsonProvider()).parse(object).read(path);
+			List<String> sorted = IntStream.range(0, arr.size())
+					.mapToObj(i -> {
+						try {
+							return Objects.toString(JsonPath.read(object, path + "[" + i + "]." + sortBy));
+						} catch (Exception e) {
+							return null;
+						}
+					})
+					.collect(Collectors.toList());
+			if (sorted.size() < 2) {
+				System.out.println("WARN: too few elements to assert sorting in `" + path + "`: " + sorted);
+				return this;
+			}
+			System.out.println(sorted);
+
+			switch (order) {
+			case "desc":
+				assertThat(sorted).isSortedAccordingTo(sortComparator.reversed());
+				break;
+			default:
+			case "asc":
+				assertThat(sorted).isSortedAccordingTo(sortComparator);
+				break;
+			}		
+		} catch (PathNotFoundException e) {
+			fail(msg + " The value at path {" + path + "} must be sorted by {" + sortBy + "} : {" + order + "}.");
 		}
 		return this;
 	}
@@ -234,6 +314,21 @@ public class JsonObjectAssert extends AbstractAssert<JsonObjectAssert, JsonObjec
 			fail(msg + " The value at path {" + path + "} was present but it should be undefined.");
 		} catch (PathNotFoundException e) {
 			// OK
+		}
+		return this;
+	}
+
+	@SuppressWarnings("rawtypes")
+	private JsonObjectAssert pathIsEmpty(String path, String msg) {
+		try {
+			Object value = JsonPath.read(actual.toString(), path);
+			if (value instanceof Map && ((Map) value).size() > 0) {
+				fail(msg + " The value at path {" + path + "} is not empty, while should be.");
+			} else if (value instanceof Collection && ((Collection) value).size() > 0) {
+				fail(msg + " The value at path {" + path + "} is not empty, while should be.");
+			}			
+		} catch (PathNotFoundException e) {
+			fail(msg + " The value at path {" + path + "} was not present but it should be present but empty.");
 		}
 		return this;
 	}
@@ -296,19 +391,21 @@ public class JsonObjectAssert extends AbstractAssert<JsonObjectAssert, JsonObjec
 
 	public JsonObjectAssert hasPermFailure(String path) {
 		JsonArray errors = actual.getJsonArray("errors");
-		for (int i = 0; i < errors.size(); i++) {
-			JsonObject error = errors.getJsonObject(i);
-			if (path.equalsIgnoreCase(error.getString("path"))) {
-				assertTrue("The error for path {" + path + "} did not contain location information.", error.containsKey("locations"));
+		if (errors != null) {
+			for (int i = 0; i < errors.size(); i++) {
+				JsonObject error = errors.getJsonObject(i);
+				if (path.equalsIgnoreCase(error.getString("path"))) {
+					assertTrue("The error for path {" + path + "} did not contain location information.", error.containsKey("locations"));
 
-				assertEquals("The message of the found error \n{" + error.encodePrettily() + "}", "graphql_error_missing_perm",
-					error.getString("message"));
-				assertEquals("The type of the found error \n{" + error.encodePrettily() + "} did not match.", "missing_perm",
-					error.getString("type"));
-				// assertEquals(uuid, error.getString("elementId"))
-				assertEquals("The type within the found error \n{" + error.encodePrettily() + "} did not match.", "node",
-					error.getString("elementType"));
-				return this;
+					assertEquals("The message of the found error \n{" + error.encodePrettily() + "}", "graphql_error_missing_perm",
+							error.getString("message"));
+					assertEquals("The type of the found error \n{" + error.encodePrettily() + "} did not match.", "missing_perm",
+							error.getString("type"));
+					// assertEquals(uuid, error.getString("elementId"))
+					assertEquals("The type within the found error \n{" + error.encodePrettily() + "} did not match.", "node",
+							error.getString("elementType"));
+					return this;
+				}
 			}
 		}
 		fail("Perm error for path {" + path + "} could not be found.");

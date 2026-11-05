@@ -47,7 +47,6 @@ import org.junit.Ignore;
 import org.junit.Test;
 
 import com.gentics.mesh.FieldUtil;
-import com.gentics.mesh.context.BulkActionContext;
 import com.gentics.mesh.core.data.dao.NodeDao;
 import com.gentics.mesh.core.data.dao.RoleDao;
 import com.gentics.mesh.core.data.dao.SchemaDao;
@@ -56,6 +55,7 @@ import com.gentics.mesh.core.data.schema.HibSchema;
 import com.gentics.mesh.core.data.schema.HibSchemaVersion;
 import com.gentics.mesh.core.db.CommonTx;
 import com.gentics.mesh.core.db.Tx;
+import com.gentics.mesh.core.rest.SortOrder;
 import com.gentics.mesh.core.rest.branch.BranchReference;
 import com.gentics.mesh.core.rest.common.AbstractResponse;
 import com.gentics.mesh.core.rest.common.Permission;
@@ -85,7 +85,9 @@ import com.gentics.mesh.core.rest.schema.impl.SchemaUpdateRequest;
 import com.gentics.mesh.json.JsonUtil;
 import com.gentics.mesh.parameter.impl.PagingParametersImpl;
 import com.gentics.mesh.parameter.impl.RolePermissionParametersImpl;
+import com.gentics.mesh.parameter.impl.SortingParametersImpl;
 import com.gentics.mesh.parameter.impl.VersioningParametersImpl;
+import com.gentics.mesh.rest.client.MeshRestClientMessageException;
 import com.gentics.mesh.test.MeshTestSetting;
 import com.gentics.mesh.test.context.AbstractMeshTest;
 import com.gentics.mesh.test.definition.BasicRestTestcases;
@@ -217,6 +219,34 @@ public class SchemaEndpointTest extends AbstractMeshTest implements BasicRestTes
 
 	@Test
 	@Override
+	public void testReadPermittedSorted() throws Exception {
+		for (int i = 0; i < 10; i++) {
+			final String name = "test12345_" + i;
+			SchemaCreateRequest request = new SchemaCreateRequest();
+			request.setName(name);
+			SchemaResponse response = call(() -> client().createSchema(request));
+			if ((i % 2) == 0) {
+				tx(tx -> {
+					tx.roleDao().revokePermissions(role(), tx.schemaDao().findByUuid(response.getUuid()), READ_PERM);
+				});
+			}
+		}
+		SchemaListResponse list = call(() -> client().findSchemas(new SortingParametersImpl("name", SortOrder.DESCENDING)));
+		assertEquals("Total data size should be 8", 8, list.getData().size());
+		assertThat(list.getData()).isSortedAccordingTo((fa, fb) -> getTestContext().getSortComparator().reversed().compare(
+				fa != null ? fa.getName() : null,
+				fb != null ? fb.getName() : null));
+	}
+
+	@Test
+	@Override
+	public void testReadPermittedSortedWrongField() throws Exception {
+		MeshRestClientMessageException error = call(() -> client().findSchemas(new SortingParametersImpl("existiertleidernicht", SortOrder.DESCENDING)), BAD_REQUEST);
+		assertThat(error.getLocalizedMessage()).as("Error message").contains("The following column names are not allowed for sorting: [existiertleidernicht].");
+	}
+
+	@Test
+	@Override
 	public void testReadMultiple() throws Exception {
 		int totalSchemas;
 		final int nSchemas = 22;
@@ -230,7 +260,7 @@ public class SchemaEndpointTest extends AbstractMeshTest implements BasicRestTes
 			schema.setName("No_Perm_Schema");
 			HibSchema noPermSchema = schemaDao.create(schema, user());
 			SchemaVersionModel dummySchema = new SchemaModelImpl();
-			dummySchema.setName("dummy");
+			dummySchema.setName("No_Perm_Schema");
 			dummySchema.setVersion("1.0");
 			noPermSchema.getLatestVersion().setSchema(dummySchema);
 
@@ -239,7 +269,7 @@ public class SchemaEndpointTest extends AbstractMeshTest implements BasicRestTes
 				schema = FieldUtil.createMinimalValidSchema();
 				schema.setName("extra_schema_" + i);
 				HibSchema extraSchema = schemaDao.create(schema, user());
-				extraSchema.getLatestVersion().setSchema(dummySchema);
+				extraSchema.getLatestVersion().setSchema(new SchemaModelImpl().setVersion("1.0").setName("extra_schema_" + i));
 				roleDao.grantPermissions(role(), extraSchema, READ_PERM);
 			}
 			totalSchemas = nSchemas + data().getSchemaContainers().size();
@@ -286,6 +316,8 @@ public class SchemaEndpointTest extends AbstractMeshTest implements BasicRestTes
 			assertEquals(4242, list.getMetainfo().getCurrentPage());
 			assertEquals(0, list.getData().size());
 		}
+
+		verifySorting(param -> call(() -> client().findSchemas(param)), SchemaResponse::getName, "name", "List of schema names");
 	}
 
 	@Test
@@ -379,7 +411,8 @@ public class SchemaEndpointTest extends AbstractMeshTest implements BasicRestTes
 
 	@Test
 	public void testReadSchemaByInvalidUUID() throws Exception {
-		call(() -> client().findSchemaByUuid("bogus"), NOT_FOUND, "object_not_found_for_uuid", "bogus");
+		String bogusUuid = UUIDUtil.randomUUID();
+		call(() -> client().findSchemaByUuid(bogusUuid), NOT_FOUND, "object_not_found_for_uuid", bogusUuid);
 	}
 
 	@Test
@@ -578,23 +611,6 @@ public class SchemaEndpointTest extends AbstractMeshTest implements BasicRestTes
 	}
 
 	@Test
-	public void testUpdateWithBogusUuid() throws GenericRestException, Exception {
-		try (Tx tx = tx()) {
-			SchemaDao schemaDao = tx.schemaDao();
-			
-			HibSchema schema = schemaContainer("content");
-			String oldName = schema.getName();
-			SchemaUpdateRequest request = new SchemaUpdateRequest();
-			request.setName("new-name");
-
-			call(() -> client().updateSchema("bogus", request), NOT_FOUND, "object_not_found_for_uuid", "bogus");
-
-			HibSchema reloaded = schemaDao.findByUuid(schema.getUuid());
-			assertEquals("The name should not have been changed.", oldName, reloaded.getName());
-		}
-	}
-
-	@Test
 	public void testDeleteWithChanges() {
 		SchemaCreateRequest schemaCreateRequest = new SchemaCreateRequest();
 		schemaCreateRequest.setName("fordeletion");
@@ -640,9 +656,8 @@ public class SchemaEndpointTest extends AbstractMeshTest implements BasicRestTes
 			assertNotNull("The schema should not have been deleted.", reloaded);
 			// Validate and delete all remaining nodes that use the schema
 			assertThat(schemaDao.getNodes(reloaded)).isNotEmpty();
-			BulkActionContext context = createBulkContext();
 			for (HibNode node : schemaDao.getNodes(schemaDao.findByUuid(getSchemaContainer().getUuid())).list()) {
-				nodeDao.delete(node, context, false, true);
+				nodeDao.delete(node, false, true);
 			}
 			assertThat(schemaDao.getNodes(schemaDao.findByUuid(uuid))).isEmpty();
 			tx.success();

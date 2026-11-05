@@ -26,13 +26,12 @@ import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import com.gentics.mesh.core.rest.node.FieldMapImpl;
-import com.gentics.mesh.core.rest.schema.ListFieldSchema;
-import com.gentics.mesh.core.rest.schema.StringFieldSchema;
 import org.apache.commons.collections.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.Strings;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import com.gentics.mesh.context.BulkActionContext;
 import com.gentics.mesh.context.InternalActionContext;
 import com.gentics.mesh.context.impl.NodeMigrationActionContextImpl;
 import com.gentics.mesh.core.data.HibDeletableField;
@@ -61,13 +60,16 @@ import com.gentics.mesh.core.rest.error.NameConflictException;
 import com.gentics.mesh.core.rest.event.node.NodeMeshEventModel;
 import com.gentics.mesh.core.rest.job.warning.ConflictWarning;
 import com.gentics.mesh.core.rest.node.FieldMap;
+import com.gentics.mesh.core.rest.node.FieldMapImpl;
 import com.gentics.mesh.core.rest.node.field.Field;
 import com.gentics.mesh.core.rest.node.field.NodeFieldListItem;
 import com.gentics.mesh.core.rest.node.field.list.impl.NodeFieldListItemImpl;
 import com.gentics.mesh.core.rest.node.version.VersionInfo;
 import com.gentics.mesh.core.rest.schema.FieldSchema;
+import com.gentics.mesh.core.rest.schema.ListFieldSchema;
 import com.gentics.mesh.core.rest.schema.SchemaModel;
 import com.gentics.mesh.core.rest.schema.SchemaVersionModel;
+import com.gentics.mesh.core.rest.schema.StringFieldSchema;
 import com.gentics.mesh.core.result.Result;
 import com.gentics.mesh.core.result.TraversalResult;
 import com.gentics.mesh.event.EventQueueBatch;
@@ -84,9 +86,6 @@ import com.gentics.mesh.util.VersionNumber;
 import com.google.common.base.Equivalence;
 import com.google.common.collect.MapDifference;
 import com.google.common.collect.Maps;
-
-import io.vertx.core.logging.Logger;
-import io.vertx.core.logging.LoggerFactory;
 
 public interface PersistingContentDao extends ContentDao {
 
@@ -230,15 +229,23 @@ public interface PersistingContentDao extends ContentDao {
 		String branchUuid = branch.getUuid();
 
 		if (handleDraftEdge) {
-			HibNodeFieldContainerEdge draftEdge = getEdge(node, languageTag, branchUuid, DRAFT);
+			HibNodeFieldContainerEdge oldDraftEdge = getEdge(node, languageTag, branchUuid, DRAFT);
+			String segmentInfo = null;
+			if (oldDraftEdge != null) {
+				segmentInfo = oldDraftEdge.getSegmentInfo();
+			}
 
 			// remove existing draft edge
-			if (draftEdge != null) {
-				removeEdge(draftEdge);
-				updateWebrootPathInfo(newContainer, branchUuid, "node_conflicting_segmentfield_update");
+			if (oldDraftEdge != null) {
+				removeEdge(oldDraftEdge);
 			}
 			// create a new draft edge
-			createContainerEdge(node, newContainer, branchUuid, languageTag, DRAFT);
+			HibNodeFieldContainerEdge newDraftEdge = createContainerEdge(node, newContainer, branchUuid, languageTag, DRAFT);
+			if (!StringUtils.isEmpty(segmentInfo)) {
+				newDraftEdge.setSegmentInfo(segmentInfo);
+			}
+
+			updateWebrootPathInfo(newContainer, branchUuid, "node_conflicting_segmentfield_update", false);
 		}
 
 		// if there is no initial edge, create one
@@ -298,7 +305,7 @@ public interface PersistingContentDao extends ContentDao {
 
 	@Override
 	default HibNodeFieldContainer createFirstFieldContainerForNode(HibNode node, String languageTag, HibBranch branch, HibUser editor) {
-		HibSchemaVersion version = branch.findLatestSchemaVersion(node.getSchemaContainer());
+		HibSchemaVersion version = Tx.get().schemaDao().findLatestVersion(branch, node.getSchemaContainer());
 		HibNodeFieldContainer newContainer = createPersisted(node.getUuid(), version, null, languageTag, new VersionNumber(), editor);
 		connectFieldContainer(node, newContainer, branch, languageTag, true);
 
@@ -311,7 +318,7 @@ public interface PersistingContentDao extends ContentDao {
 		// We need create a new container with no reference, if an original is not provided.
 		// So use the latest version available to use.
 		HibSchemaVersion version = Objects.isNull(original)
-				? branch.findLatestSchemaVersion(node.getSchemaContainer())
+				? Tx.get().schemaDao().findLatestVersion(branch, node.getSchemaContainer())
 				: getSchemaContainerVersion(original) ;
 		return createFieldContainer(version, node, languageTag, branch, editor, original, handleDraftEdge);
 	}
@@ -380,14 +387,14 @@ public interface PersistingContentDao extends ContentDao {
 	}
 
 	@Override
-	default void deleteLanguageContainer(HibNode node, InternalActionContext ac, HibBranch branch, String languageTag, BulkActionContext bac,
+	default void deleteLanguageContainer(HibNode node, InternalActionContext ac, HibBranch branch, String languageTag,
 										 boolean failForLastContainer) {
 		NodeDao nodeDao = Tx.get().nodeDao();
 		
 		// 1. Check whether the container has also a published variant. We need to take it offline in those cases
 		HibNodeFieldContainer container = getFieldContainer(node, languageTag, branch, PUBLISHED);
 		if (container != null) {
-			nodeDao.takeOffline(node, ac, bac, branch, languageTag);
+			nodeDao.takeOffline(node, ac, branch, languageTag);
 		}
 
 		// 2. Load the draft container and remove it from the branch
@@ -395,7 +402,7 @@ public interface PersistingContentDao extends ContentDao {
 		if (container == null) {
 			throw error(NOT_FOUND, "node_no_language_found", languageTag);
 		}
-		deleteFromBranch(container, branch, bac);
+		deleteFromBranch(container, branch);
 		// No need to delete the published variant because if the container was published the take offline call handled it
 
 		// starting with the old draft, delete all GFC that have no next and are not draft (for other branches)
@@ -403,7 +410,7 @@ public interface PersistingContentDao extends ContentDao {
 		while (dangling != null && !isDraft(dangling) && !dangling.hasNextVersion()) {
 			HibNodeFieldContainer toDelete = dangling;
 			dangling = toDelete.getPreviousVersion();
-			delete(toDelete, bac);
+			delete(toDelete);
 		}
 
 		HibNodeFieldContainer initial = getFieldContainer(node, languageTag, branch, INITIAL);
@@ -420,7 +427,7 @@ public interface PersistingContentDao extends ContentDao {
 				// an INITIAL, which would have to be either this GFC or a previous)
 				Iterator<HibNodeFieldContainer> danglingIterator = getNextVersions(toDelete).iterator();
 				dangling = danglingIterator.hasNext() ? danglingIterator.next() : null;
-				delete(toDelete, bac, false);
+				delete(toDelete, false);
 			}
 		}
 
@@ -437,7 +444,7 @@ public interface PersistingContentDao extends ContentDao {
 
 			// Also delete the node and children
 			if (parameters.isRecursive() && wasLastContainer) {
-				nodeDao.deleteFromBranch(node, ac, branch, bac, false);
+				nodeDao.deleteFromBranch(node, ac, branch, false);
 			}
 		}
 	}
@@ -526,19 +533,19 @@ public interface PersistingContentDao extends ContentDao {
 	}
 
 	@Override
-	default void updateWebrootPathInfo(HibNodeFieldContainer content, InternalActionContext ac, String branchUuid, String conflictI18n) {
+	default void updateWebrootPathInfo(HibNodeFieldContainer content, InternalActionContext ac, String branchUuid, String conflictI18n, boolean checkForConflicts) {
 		Set<String> urlFieldValues = getUrlFieldValues(content).collect(Collectors.toSet());
 		Iterator<? extends HibNodeFieldContainerEdge> it = getContainerEdges(content, DRAFT, branchUuid);
 		if (it.hasNext()) {
 			HibNodeFieldContainerEdge draftEdge = it.next();
 			updateWebrootPathInfo(content, ac, draftEdge, branchUuid, conflictI18n, DRAFT);
-			updateWebrootUrlFieldsInfo(content, draftEdge, branchUuid, urlFieldValues, DRAFT);
+			updateWebrootUrlFieldsInfo(content, draftEdge, branchUuid, urlFieldValues, DRAFT, checkForConflicts);
 		}
 		it = getContainerEdges(content, PUBLISHED, branchUuid);
 		if (it.hasNext()) {
 			HibNodeFieldContainerEdge publishEdge = it.next();
 			updateWebrootPathInfo(content, ac, publishEdge, branchUuid, conflictI18n, PUBLISHED);
-			updateWebrootUrlFieldsInfo(content, publishEdge, branchUuid, urlFieldValues, PUBLISHED);
+			updateWebrootUrlFieldsInfo(content, publishEdge, branchUuid, urlFieldValues, PUBLISHED, checkForConflicts);
 		}
 	}
 
@@ -669,10 +676,16 @@ public interface PersistingContentDao extends ContentDao {
 		String segment = getPathSegment(node, branchUuid, type, getLanguageTag(content));
 
 		// The webroot uniqueness will be checked by validating that the string [segmentValue-branchUuid-parentNodeUuid] is only listed once within the given
-		// specific index for (drafts or published nodes)
-		if (segment != null) {
+		// specific index for (drafts or published nodes). Segment field should also be set, otherwise the segment info is treated as outdated and is subject to reset.
+		if (segment != null && StringUtils.isNotBlank(segmentFieldName)) {
 			HibNode parentNode = nodeDao.getParentNode(node, branchUuid);
 			String segmentInfo = composeSegmentInfo(parentNode, segment);
+
+			String currentSegmentInfo = edge.getSegmentInfo();
+			if (Strings.CS.equals(segmentInfo, currentSegmentInfo) || (StringUtils.isEmpty(segmentInfo) && StringUtils.isEmpty(currentSegmentInfo))) {
+				return true;
+			}
+
 			// check for uniqueness of webroot path
 			HibNodeFieldContainerEdge conflictingEdge = getConflictingEdgeOfWebrootPath(content, segmentInfo, branchUuid, type, edge);
 			if (conflictingEdge != null) {
@@ -707,12 +720,12 @@ public interface PersistingContentDao extends ContentDao {
 	 * @param branchUuid
 	 * @param urlFieldValues
 	 * @param type
+	 * @param checkForConflicts true when the check for conflicting values must be done, false if not
 	 */
-	private void updateWebrootUrlFieldsInfo(HibNodeFieldContainer content, HibNodeFieldContainerEdge edge, String branchUuid, Set<String> urlFieldValues, ContainerType type) {
+	private void updateWebrootUrlFieldsInfo(HibNodeFieldContainer content, HibNodeFieldContainerEdge edge, String branchUuid, Set<String> urlFieldValues, ContainerType type, boolean checkForConflicts) {
 		if (urlFieldValues != null && !urlFieldValues.isEmpty()) {
-			// Individually check each url
-			for (String urlFieldValue : urlFieldValues) {
-				HibNodeFieldContainerEdge conflictingEdge = getConflictingEdgeOfWebrootField(content, edge, urlFieldValue, branchUuid, type);
+			if (checkForConflicts) {
+				HibNodeFieldContainerEdge conflictingEdge = getConflictingEdgeOfWebrootField(content, edge, urlFieldValues, branchUuid, type);
 				if (conflictingEdge != null) {
 					HibNodeFieldContainer conflictingContainer = conflictingEdge.getNodeContainer();
 					HibNode conflictingNode = conflictingEdge.getNode();
@@ -730,7 +743,7 @@ public interface PersistingContentDao extends ContentDao {
 
 					throw nodeConflict(conflictingNode.getUuid(), conflictingContainer.getDisplayFieldValue(), conflictingContainer.getLanguageTag(),
 							"node_conflicting_urlfield_update", paths, conflictingContainer.getNode().getUuid(),
-							conflictingContainer.getLanguageTag());
+							conflictingContainer.getLanguageTag(), fromConflictingContainer.stream().collect(Collectors.joining(", ")));
 				}
 			}
 			edge.setUrlFieldInfo(urlFieldValues);
@@ -981,12 +994,12 @@ public interface PersistingContentDao extends ContentDao {
 	}
 
 	@Override
-	default void deleteFromBranch(HibNodeFieldContainer content, HibBranch branch, BulkActionContext bac) {
+	default void deleteFromBranch(HibNodeFieldContainer content, HibBranch branch) {
 		String branchUuid = branch.getUuid();
 
-		bac.batch().add(onDeleted(content, branchUuid, DRAFT));
+		Tx.get().batch().add(onDeleted(content, branchUuid, DRAFT));
 		if (isPublished(content, branchUuid)) {
-			bac.batch().add(onDeleted(content, branchUuid, PUBLISHED));
+			Tx.get().batch().add(onDeleted(content, branchUuid, PUBLISHED));
 		}
 
 		HibNode node = getNode(content);
@@ -1002,7 +1015,7 @@ public interface PersistingContentDao extends ContentDao {
 	}
 
 	@Override
-	default void purge(HibNodeFieldContainer content, BulkActionContext bac) {
+	default void purge(HibNodeFieldContainer content) {
 		if (log.isDebugEnabled()) {
 			log.debug("Purging container {" + content.getUuid() + "} for version {" + content.getVersion() + "}");
 		}
@@ -1013,7 +1026,7 @@ public interface PersistingContentDao extends ContentDao {
 				beforePrev.setNextVersion(afterPrev);
 			}
 		}
-		delete(content, bac, false);
+		delete(content, false);
 	}
 
 	@Override
@@ -1073,8 +1086,18 @@ public interface PersistingContentDao extends ContentDao {
 			}
 
 		}
-
 		return fields;
+	}
+
+	/**
+	 * Check whether this field container edge has the given type in the given branch.
+	 *
+	 * @param type
+	 * @param branchUuid
+	 * @return true if it matches the type, false if not
+	 */
+	default boolean isType(HibNodeFieldContainerEdge edge, ContainerType type, String branchUuid) {
+		return edge.getType().equals(type) && edge.getBranchUuid().equals(branchUuid);
 	}
 }
 

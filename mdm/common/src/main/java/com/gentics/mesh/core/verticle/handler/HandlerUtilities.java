@@ -10,7 +10,9 @@ import static io.netty.handler.codec.http.HttpResponseStatus.FORBIDDEN;
 import static io.netty.handler.codec.http.HttpResponseStatus.NO_CONTENT;
 import static io.netty.handler.codec.http.HttpResponseStatus.OK;
 
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -18,6 +20,9 @@ import java.util.function.Function;
 import javax.inject.Inject;
 import javax.inject.Provider;
 import javax.inject.Singleton;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.gentics.mesh.context.BulkActionContext;
 import com.gentics.mesh.context.InternalActionContext;
@@ -28,24 +33,23 @@ import com.gentics.mesh.core.data.HibCoreElement;
 import com.gentics.mesh.core.data.page.Page;
 import com.gentics.mesh.core.data.page.PageTransformer;
 import com.gentics.mesh.core.data.perm.InternalPermission;
+import com.gentics.mesh.core.db.CommonTx;
 import com.gentics.mesh.core.db.Database;
-import com.gentics.mesh.core.db.TxEventAction;
 import com.gentics.mesh.core.db.Tx;
 import com.gentics.mesh.core.db.TxAction;
 import com.gentics.mesh.core.db.TxAction0;
 import com.gentics.mesh.core.db.TxAction2;
+import com.gentics.mesh.core.db.TxEventAction;
 import com.gentics.mesh.core.db.TxEventAction0;
 import com.gentics.mesh.core.rest.common.RestModel;
 import com.gentics.mesh.core.rest.error.NotModifiedException;
 import com.gentics.mesh.etc.config.MeshOptions;
 import com.gentics.mesh.event.EventQueueBatch;
 import com.gentics.mesh.parameter.PagingParameters;
-import com.gentics.mesh.util.Tuple;
 import com.gentics.mesh.util.UUIDUtil;
 import com.gentics.mesh.util.ValidationUtil;
 
-import io.vertx.core.logging.Logger;
-import io.vertx.core.logging.LoggerFactory;
+import io.vertx.core.Vertx;
 import io.vertx.ext.web.RoutingContext;
 
 /**
@@ -66,14 +70,20 @@ public class HandlerUtilities {
 
 	private final PageTransformer pageTransformer;
 
+	private final MeshOptions meshOptions;
+
+	private final Vertx vertx;
+
 	@Inject
 	public HandlerUtilities(Database database, MeshOptions meshOptions, Provider<EventQueueBatch> queueProvider,
-		Provider<BulkActionContext> bulkProvider, WriteLock writeLock, PageTransformer pageTransformer) {
+		Provider<BulkActionContext> bulkProvider, WriteLock writeLock, PageTransformer pageTransformer, Vertx vertx) {
 		this.database = database;
 		this.queueProvider = queueProvider;
 		this.bulkProvider = bulkProvider;
 		this.writeLock = writeLock;
 		this.pageTransformer = pageTransformer;
+		this.meshOptions = meshOptions;
+		this.vertx = vertx;
 	}
 
 	/**
@@ -118,8 +128,9 @@ public class HandlerUtilities {
 	public <T extends HibCoreElement<RM>, RM extends RestModel> void deleteElement(InternalActionContext ac, Function<Tx, Object> parentLoader,
 		DAOActions<T, RM> actions,
 		String uuid) {
+		ac.setHttpServerConfig(meshOptions.getHttpServerOptions());
 		try (WriteLock lock = writeLock.lock(ac)) {
-			syncTx(ac, tx -> {
+			syncTxBulkable(ac, (tx, bac) -> {
 				Object parent = null;
 				if (parentLoader != null) {
 					parent = parentLoader.apply(tx);
@@ -128,10 +139,8 @@ public class HandlerUtilities {
 
 				// Load the name and uuid of the element. We need this info after deletion.
 				String elementUuid = element.getUuid();
-				bulkableAction(bac -> {
-					bac.setRootCause(element.getTypeInfo().getType(), elementUuid, DELETE);
-					actions.delete(tx, element, bac);
-				});
+				bac.setRootCause(element.getTypeInfo().getType(), elementUuid, DELETE);
+				actions.delete(tx, element);
 				log.info("Deleted element {" + elementUuid + "} for type {" + element.getClass().getSimpleName() + "}");
 			}, () -> ac.send(NO_CONTENT));
 		}
@@ -183,9 +192,10 @@ public class HandlerUtilities {
 	 */
 	public <T extends HibCoreElement<RM>, RM extends RestModel> void createOrUpdateElement(InternalActionContext ac, Function<Tx, Object> parentLoader,
 		String uuid, DAOActions<T, RM> actions) {
+		ac.setHttpServerConfig(meshOptions.getHttpServerOptions());
 		try (WriteLock lock = writeLock.lock(ac)) {
 			AtomicBoolean created = new AtomicBoolean(false);
-			syncTx(ac, (batch, tx) -> {
+			syncTxBulkable(ac, (tx, bac) -> {
 				// 1. Load the element from the root element using the given uuid (if not null)
 				T element = null;
 				if (uuid != null) {
@@ -202,12 +212,12 @@ public class HandlerUtilities {
 				// Check whether we need to update a found element or whether we need to create a new one.
 				if (element != null) {
 					final T updateElement = element;
-					actions.update(tx, updateElement, ac, batch);
+					actions.update(tx, updateElement, ac, bac.batch());
 					RM model = actions.transformToRestSync(tx, updateElement, ac, 0);
 					return model;
 				} else {
 					created.set(true);
-					T createdElement =  actions.create(tx, ac, batch, uuid);
+					T createdElement =  actions.create(tx, ac, bac.batch(), uuid);
 					RM model = actions.transformToRestSync(tx, createdElement, ac, 0);
 					String path = actions.getAPIPath(tx, ac, createdElement);
 					ac.setLocation(path);
@@ -247,7 +257,7 @@ public class HandlerUtilities {
 	 */
 	public <T extends HibCoreElement<RM>, RM extends RestModel> void readElement(InternalActionContext ac, Function<Tx, Object> parentLoader, String uuid,
 		DAOActions<T, RM> actions, InternalPermission perm) {
-
+		ac.setHttpServerConfig(meshOptions.getHttpServerOptions());
 		syncTx(ac, tx -> {
 			Object parent = null;
 			if (parentLoader != null) {
@@ -294,7 +304,7 @@ public class HandlerUtilities {
 		LoadAllAction<T> actions) {
 		PagingParameters pagingInfo = ac.getPagingParameters();
 		ValidationUtil.validate(pagingInfo);
-
+		ac.setHttpServerConfig(meshOptions.getHttpServerOptions());
 		syncTx(ac, tx -> {
 			Object parent = null;
 			if (parentLoader != null) {
@@ -324,6 +334,7 @@ public class HandlerUtilities {
 	 */
 	public <RM> void syncTx(InternalActionContext ac, TxAction<RM> handler, Consumer<RM> action) {
 		try {
+			ac.setHttpServerConfig(meshOptions.getHttpServerOptions());
 			RM model = database.tx(handler);
 			action.accept(model);
 		} catch (Throwable t) {
@@ -341,12 +352,13 @@ public class HandlerUtilities {
 	 */
 	public <RM> void syncTx(InternalActionContext ac, TxEventAction<RM> handler, Consumer<RM> action) {
 		try {
-			Tuple<EventQueueBatch, RM> tuple = database.tx((tx) -> {
+			ac.setHttpServerConfig(meshOptions.getHttpServerOptions());
+			RM rm = database.tx((tx) -> {
 				EventQueueBatch eventQueueBatch = queueProvider.get();
-				return Tuple.tuple(eventQueueBatch, handler.handle(eventQueueBatch, tx));
+				tx.<CommonTx>unwrap().data().setEventQueueBatch(eventQueueBatch);
+				return handler.handle(eventQueueBatch, tx);
 			});
-			tuple.v1().dispatch();
-			action.accept(tuple.v2());
+			action.accept(rm);
 		} catch (Throwable t) {
 			ac.fail(t);
 		}
@@ -360,12 +372,12 @@ public class HandlerUtilities {
 	 */
 	public void syncTx(InternalActionContext ac, TxEventAction0 handler, Runnable action) {
 		try {
-			EventQueueBatch batch = database.tx((tx) -> {
+			ac.setHttpServerConfig(meshOptions.getHttpServerOptions());
+			database.tx((tx) -> {
 				EventQueueBatch eventQueueBatch = queueProvider.get();
+				tx.<CommonTx>unwrap().data().setEventQueueBatch(eventQueueBatch);
 				handler.handle(eventQueueBatch, tx);
-				return eventQueueBatch;
 			});
-			batch.dispatch();
 			action.run();
 		} catch (Throwable t) {
 			ac.fail(t);
@@ -381,6 +393,7 @@ public class HandlerUtilities {
 	 */
 	public void syncTx(InternalActionContext ac, TxAction0 handler, Runnable action) {
 		try {
+			ac.setHttpServerConfig(meshOptions.getHttpServerOptions());
 			database.tx(handler);
 			action.run();
 		} catch (Throwable t) {
@@ -405,6 +418,102 @@ public class HandlerUtilities {
 	}
 
 	/**
+	 * Invoke sync action in a tx by submitting the task to the given executor service.
+	 * The given success callback and also failure handling will be run in the vertx context (i.e. in the event loop)
+	 * 
+	 * @param ac action context
+	 * @param handler handler to be called with the database tx
+	 * @param action success action
+	 * @param executor executor service
+	 */
+	public void syncTx(InternalActionContext ac, TxAction2 handler, Runnable action, ExecutorService executor) {
+		executor.submit(() -> {
+			try {
+				database.tx(handler);
+				vertx.runOnContext(v -> {
+					action.run();
+				});
+			} catch (Throwable t) {
+				vertx.runOnContext(v -> {
+					ac.fail(t);
+				});
+			}
+		});
+	}
+
+	/**
+	 * Invoke a sync action in a tx, and a bulkable context processing, if no tx failure happened.
+	 * 
+	 * @param ac
+	 * @param handler
+	 * @param function
+	 */
+	public void syncTxBulkable(InternalActionContext ac, BiConsumer<Tx, BulkActionContext> function, Runnable action) {
+		BulkActionContext bac = bulkProvider.get();
+		syncTx(ac, tx -> {
+			tx.<CommonTx>unwrap().data().setBulkActionContext(bac);
+			function.accept(tx, bac);
+		}, () -> {
+			bac.process(true);
+			action.run();
+		});
+	}
+
+	/**
+	 * Variant of {@link #syncTxBulkable(InternalActionContext, BiConsumer, Runnable)} which submits the task to the given executor service
+	 * @param ac action context
+	 * @param function function to be called
+	 * @param action success callback
+	 * @param executor executor service
+	 */
+	public void syncTxBulkable(InternalActionContext ac, BiConsumer<Tx, BulkActionContext> function, Runnable action,
+			ExecutorService executor) {
+		BulkActionContext bac = bulkProvider.get();
+		syncTx(ac, tx -> {
+			tx.<CommonTx>unwrap().data().setBulkActionContext(bac);
+			function.accept(tx, bac);
+		}, () -> {
+			bac.process(true);
+			action.run();
+		}, executor);
+	}
+
+	/**
+	 * Invoke a sync action in a tx, returning a model, a bulkable context processing, and an after-tx action on the returned model, if no tx failure happened.
+	 * 
+	 * @param ac
+	 * @param handler
+	 * @param function
+	 */
+	public <RM> void syncTxBulkable(InternalActionContext ac, BiFunction<Tx, BulkActionContext, RM> function, Consumer<RM> action) {
+		BulkActionContext bac = bulkProvider.get();
+		syncTx(ac, tx -> {
+			tx.<CommonTx>unwrap().data().setBulkActionContext(bac);
+			return function.apply(tx, bac);
+		}, model -> {
+			bac.process(true);
+			action.accept(model);
+		});
+	}
+
+	/**
+	 * Invoke a bulkable action which returns a result.
+	 *
+	 * @param function
+	 * @return
+	 */
+	public <T> T syncTxBulkable(BiFunction<Tx, BulkActionContext, T> function) {
+		BulkActionContext bac = bulkProvider.get();
+		T t = database.tx(tx -> {
+			tx.<CommonTx>unwrap().data().setBulkActionContext(bac);
+			T result = function.apply(tx, bac);
+			return result;
+		});
+		bac.process(true);
+		return t;
+	}
+
+	/**
 	 * Invoke a bulkable action.
 	 * 
 	 * @param function
@@ -422,13 +531,13 @@ public class HandlerUtilities {
 	 * @return
 	 */
 	public <T> T eventAction(BiFunction<Tx, EventQueueBatch, T> function) {
-		Tuple<T, EventQueueBatch> tuple = database.tx(tx -> {
+		T t = database.tx(tx -> {
 			EventQueueBatch batch = queueProvider.get();
+			tx.<CommonTx>unwrap().data().setEventQueueBatch(batch);
 			T result = function.apply(tx, batch);
-			return Tuple.tuple(result, batch);
+			return result;
 		});
-		tuple.v2().dispatch();
-		return tuple.v1();
+		return t;
 	}
 
 	/**
@@ -437,8 +546,18 @@ public class HandlerUtilities {
 	 * @param context
 	 */
 	public void requiresAdminRole(RoutingContext context) {
-		InternalRoutingActionContextImpl rc = new InternalRoutingActionContextImpl(context);
-		if (database.tx(() -> !rc.getUser().isAdmin())) {
+		requiresAdminRole(context, meshOptions, database);
+	}
+
+	/**
+	 * Check whether the user is an admin. An error will be thrown otherwise.
+	 * 
+	 * @param context
+	 */
+	public static void requiresAdminRole(RoutingContext context, MeshOptions meshOptions, Database database) {
+		InternalRoutingActionContextImpl ac = new InternalRoutingActionContextImpl(context);
+		ac.setHttpServerConfig(meshOptions.getHttpServerOptions());
+		if (database.tx(() -> !ac.getUser().isAdmin())) {
 			throw error(FORBIDDEN, "error_admin_permission_required");
 		} else {
 			context.next();

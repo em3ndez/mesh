@@ -4,7 +4,9 @@ import java.io.IOException;
 import java.io.InputStream;
 
 import com.gentics.mesh.core.data.node.field.HibBinaryField;
+import com.gentics.mesh.core.db.Tx;
 import com.gentics.mesh.util.UUIDUtil;
+
 import io.reactivex.Completable;
 import io.reactivex.Flowable;
 import io.vertx.core.buffer.Buffer;
@@ -55,7 +57,19 @@ public interface BinaryStorage {
 	 * @param temporaryId
 	 * @return
 	 */
-	Completable moveInPlace(String uuid, String temporaryId);
+	default Completable moveInPlace(String uuid, String temporaryId) {
+		return moveInPlace(uuid, temporaryId, true);
+	}
+
+	/**
+	 * Move the temporary uploaded binary into place.
+	 * 
+	 * @param uuid
+	 * @param path pathOrTemporaryId
+	 * @param isTempId is path argument containing a temporary ID?
+	 * @return
+	 */
+	Completable moveInPlace(String uuid, String path, boolean isTempId);
 
 	/**
 	 * Checks whether the binary data for the given field exists
@@ -110,6 +124,14 @@ public interface BinaryStorage {
 	Completable delete(String uuid);
 
 	/**
+	 * Delete the binary with the given UUID if the transaction succeeds.
+	 * 
+	 * @param uuid
+	 * @param tx
+	 */
+	void deleteOnTxSuccess(String uuid, Tx tx);
+
+	/**
 	 * Delete the temporary upload with the given id.
 	 * 
 	 * @param temporaryId
@@ -117,4 +139,11 @@ public interface BinaryStorage {
 	 */
 	Completable purgeTemporaryUpload(String temporaryId);
 
+	/**
+	 * Return the local filesystem path for the binary.
+	 *
+	 * @param binaryUuid of the binary
+	 * @return Absolute path
+	 */
+	String getFilePath(String binaryUuid);
 }

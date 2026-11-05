@@ -2,13 +2,19 @@ package com.gentics.mesh.rest.client.impl;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.SocketException;
+import java.net.SocketTimeoutException;
 import java.net.URI;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
 import org.apache.commons.lang.StringUtils;
+import org.reactivestreams.Publisher;
 
 import com.gentics.mesh.core.rest.common.GenericMessageResponse;
 import com.gentics.mesh.core.rest.error.GenericRestException;
@@ -16,16 +22,23 @@ import com.gentics.mesh.json.JsonUtil;
 import com.gentics.mesh.rest.client.MeshBinaryResponse;
 import com.gentics.mesh.rest.client.MeshRequest;
 import com.gentics.mesh.rest.client.MeshResponse;
+import com.gentics.mesh.rest.client.MeshRestClient;
+import com.gentics.mesh.rest.client.MeshRestClientConfig;
 import com.gentics.mesh.rest.client.MeshRestClientMessageException;
 import com.gentics.mesh.rest.client.MeshWebrootFieldResponse;
 import com.gentics.mesh.rest.client.MeshWebrootResponse;
 
-import io.reactivex.Completable;
+import io.reactivex.Flowable;
+import io.reactivex.Observable;
 import io.reactivex.Single;
 import okhttp3.Call;
 import okhttp3.Callback;
+import okhttp3.Cookie;
 import okhttp3.Headers;
+import okhttp3.HttpUrl;
 import okhttp3.MediaType;
+import okhttp3.MultipartBody;
+import okhttp3.MultipartBody.Builder;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.RequestBody;
@@ -40,20 +53,21 @@ import okio.Okio;
  * @see MeshRequest
  * @param <T>
  */
-public class MeshOkHttpRequestImpl<T> implements MeshRequest<T> {
+public class MeshOkHttpRequestImpl<T> extends AbstractMeshOkHttpRequest<T> {
 
-	private final OkHttpClient client;
-	private final Class<? extends T> resultClass;
+	private final MeshRestClient meshClient;
+	private final MeshRestClientConfig config;
 
 	private final String method;
 	private final String url;
 	private final Map<String, String> headers;
 	private final RequestBody requestBody;
 
-	private MeshOkHttpRequestImpl(OkHttpClient client, Class<? extends T> resultClass, String method, String url, Map<String, String> headers,
+	private MeshOkHttpRequestImpl(MeshRestClient meshClient, OkHttpClient client, MeshRestClientConfig config, Class<? extends T> resultClass, String method, String url, Map<String, String> headers,
 		RequestBody requestBody) {
-		this.client = client;
-		this.resultClass = resultClass;
+		super(client, resultClass);
+		this.meshClient = meshClient;
+		this.config = config;
 		this.method = method;
 		this.url = url;
 		this.headers = headers;
@@ -61,31 +75,31 @@ public class MeshOkHttpRequestImpl<T> implements MeshRequest<T> {
 	}
 
 	/**
-	 * Create a new binary request.
-	 * 
-	 * @param <T>
-	 *            Response type
-	 * @param client
-	 *            Client to be used
-	 * @param method
-	 *            Request method
-	 * @param url
-	 *            Request url
-	 * @param headers
-	 *            Additional headers
-	 * @param classOfT
-	 *            Response model class
-	 * @param data
-	 *            stream for the binary data
-	 * @param fileSize
-	 *            expected length of the data
-	 * @param contentType
-	 *            Posted content type
-	 * @return
+	 * Create a {@link MeshOkHttpRequestImpl} using the request parameters that sends a multipart/form-data request for uploading a file
+	 * @param <T> type of the response
+	 * @param meshClient mesh client
+	 * @param client okhttp client
+	 * @param config client configuration
+	 * @param method request method
+	 * @param url request url
+	 * @param headers request headers
+	 * @param classOfT class of the response
+	 * @param fileName file name
+	 * @param contentType content type
+	 * @param fileData file data
+	 * @param fileSize file size
+	 * @param fields additional fields to be contained in the form
+	 * @return request implementation
 	 */
-	public static <T> MeshOkHttpRequestImpl<T> BinaryRequest(OkHttpClient client, String method, String url, Map<String, String> headers,
-		Class<? extends T> classOfT, InputStream data, long fileSize, String contentType) {
-		return new MeshOkHttpRequestImpl<>(client, classOfT, method, url, headers, new RequestBody() {
+	public static <T> MeshOkHttpRequestImpl<T> FileUploadRequest(MeshRestClient meshClient, OkHttpClient client, MeshRestClientConfig config, String method, String url, Map<String, String> headers,
+		Class<? extends T> classOfT, String fileName, String contentType, InputStream fileData, long fileSize, Map<String, String> fields) {
+		// create request body containing the file
+		RequestBody fileBody = new RequestBody() {
+			@Override
+			public long contentLength() throws IOException {
+				return fileSize;
+			}
+
 			@Override
 			public MediaType contentType() {
 				return MediaType.get(contentType);
@@ -94,19 +108,34 @@ public class MeshOkHttpRequestImpl<T> implements MeshRequest<T> {
 			@Override
 			public void writeTo(BufferedSink sink) throws IOException {
 				try {
-					sink.writeAll(Okio.source(data));
+					sink.writeAll(Okio.source(fileData));
 				} finally {
-					data.close();
+					fileData.close();
 				}
 			}
-		});
+		};
+
+		// build request body for the whole request
+		Builder builder = new MultipartBody.Builder()
+			.setType(MultipartBody.FORM)
+			.addFormDataPart("shohY6d", fileName, fileBody);
+		if (fields != null) {
+			fields.entrySet().forEach(entry -> {
+				builder.addFormDataPart(entry.getKey(), entry.getValue());
+			});
+		}
+
+		return new MeshOkHttpRequestImpl<>(meshClient, client, config, classOfT, method, url, headers, builder.build());
 	}
 
 	/**
 	 * Create a {@link MeshOkHttpRequestImpl} using the request parameters that sends a JSON payload.
 	 * 
 	 * @param <T>
+	 * @param meshClient
+	 *            Mesh Client
 	 * @param client
+	 * @param config
 	 * @param method
 	 * @param url
 	 * @param headers
@@ -114,16 +143,25 @@ public class MeshOkHttpRequestImpl<T> implements MeshRequest<T> {
 	 * @param json
 	 * @return
 	 */
-	public static <T> MeshOkHttpRequestImpl<T> JsonRequest(OkHttpClient client, String method, String url, Map<String, String> headers,
-		Class<? extends T> classOfT, String json) {
-		return new MeshOkHttpRequestImpl<>(client, classOfT, method, url, headers, RequestBody.create(MediaType.get("application/json"), json));
+	public static <T> MeshOkHttpRequestImpl<T> JsonRequest(MeshRestClient meshClient, OkHttpClient client, MeshRestClientConfig config, String method, String url, Map<String, String> headers,
+		Class<? extends T> classOfT, String json, boolean nullBodyAllowed) {
+		if (StringUtils.isNotBlank(json) || !nullBodyAllowed) {
+			return new MeshOkHttpRequestImpl<>(meshClient, client, config, classOfT, method, url, headers, RequestBody.create(MediaType.get("application/json"), json));
+		} else {
+			headers = new HashMap<>(headers);
+			headers.put("Content-Type", "application/json");
+			return EmptyRequest(meshClient, client, config, method, url, headers, classOfT);
+		}
 	}
 
 	/**
 	 * Create a {@link MeshOkHttpRequestImpl} using the request parameters that sends a plain text payload.
 	 * 
 	 * @param <T>
+	 * @param meshClient
+	 *            Mesh Client
 	 * @param client
+	 * @param config
 	 * @param method
 	 * @param url
 	 * @param headers
@@ -131,25 +169,34 @@ public class MeshOkHttpRequestImpl<T> implements MeshRequest<T> {
 	 * @param text
 	 * @return
 	 */
-	public static <T> MeshOkHttpRequestImpl<T> TextRequest(OkHttpClient client, String method, String url, Map<String, String> headers,
-		Class<? extends T> classOfT, String text) {
-		return new MeshOkHttpRequestImpl<>(client, classOfT, method, url, headers, RequestBody.create(MediaType.get("text/plain"), text));
+	public static <T> MeshOkHttpRequestImpl<T> TextRequest(MeshRestClient meshClient, OkHttpClient client, MeshRestClientConfig config, String method, String url, Map<String, String> headers,
+		Class<? extends T> classOfT, String text, boolean nullBodyAllowed) {
+		if (StringUtils.isNotBlank(text) || !nullBodyAllowed) {
+			return new MeshOkHttpRequestImpl<>(meshClient, client, config, classOfT, method, url, headers, RequestBody.create(MediaType.get("text/plain"), text));
+		} else {
+			headers = new HashMap<>(headers);
+			headers.put("Content-Type", "text/plain");
+			return EmptyRequest(meshClient, client, config, method, url, headers, classOfT);
+		}
 	}
 
 	/**
 	 * Create a {@link MeshOkHttpRequestImpl} request which does not send a body payload.
 	 * 
 	 * @param <T>
+	 * @param meshClient
+	 *            Mesh Client
 	 * @param client
+	 * @param config
 	 * @param method
 	 * @param url
 	 * @param headers
 	 * @param classOfT
 	 * @return
 	 */
-	public static <T> MeshOkHttpRequestImpl<T> EmptyRequest(OkHttpClient client, String method, String url, Map<String, String> headers,
+	public static <T> MeshOkHttpRequestImpl<T> EmptyRequest(MeshRestClient meshClient, OkHttpClient client, MeshRestClientConfig config, String method, String url, Map<String, String> headers,
 		Class<? extends T> classOfT) {
-		return new MeshOkHttpRequestImpl<>(client, classOfT, method, url, headers, RequestBody.create(null, ""));
+		return new MeshOkHttpRequestImpl<>(meshClient, client, config, classOfT, method, url, headers, RequestBody.create(null, ""));
 	}
 
 	@Override
@@ -162,7 +209,8 @@ public class MeshOkHttpRequestImpl<T> implements MeshRequest<T> {
 		this.headers.putAll(headers);
 	}
 
-	private Request createRequest() {
+	@Override
+	protected Request createRequest() {
 		Request.Builder builder = new Request.Builder()
 			.url(url)
 			.headers(Headers.of(headers));
@@ -174,13 +222,21 @@ public class MeshOkHttpRequestImpl<T> implements MeshRequest<T> {
 		return builder.build();
 	}
 
-	private Single<Response> getOkResponse() {
-		return Single.create(sub -> {
+	/**
+	 * Get a single of a raw OkHttp Response.
+	 * 
+	 * @return
+	 */
+	public Single<Response> getOkResponse() {
+		Single<Response> response =  Single.create(sub -> {
 			Call call = client.newCall(createRequest());
 			call.enqueue(new Callback() {
 				@Override
 				public void onFailure(Call call, IOException e) {
-					if (!sub.isDisposed()) {
+					// Don't call the onError twice, but notify about multiple exceptions (should not occur often).
+					if (sub.isDisposed()) {
+						e.printStackTrace();
+					} else {
 						sub.onError(new IOException(String.format("I/O Error in %s %s : %s (%s)",
 								HttpMethod.valueOf(method.toUpperCase()), url, e.getClass().getSimpleName(), e.getLocalizedMessage()), e));
 					}
@@ -196,24 +252,47 @@ public class MeshOkHttpRequestImpl<T> implements MeshRequest<T> {
 				}
 			});
 		});
+
+		if (config == null) {
+			return response;
+		}
+
+		int retries = config.getMaxRetries();
+		int delay = config.getRetryDelayMs();
+
+		if (retries <= 0) {
+			return response;
+		}
+
+		// Setting the delay < 0 means auto-delay, which is set so that all
+		// retries happen within the configured overall call timeout. If no
+		// delay is desired, set it to 0. Then retryOnNetworkErrors() will
+		// ignore it.
+		if (delay < 0) {
+			delay = client.callTimeoutMillis() / retries;
+		}
+
+		return response.retryWhen(retryOnNetworkErrors(retries, delay));
 	}
 
-	@Override
-	public Single<T> toSingle() {
-		return getOkResponse().map(this::mapResponse);
-	}
-
-	@Override
-	public Completable toCompletable() {
-		return getOkResponse()
-			.doOnSuccess(this::throwOnError)
-			.doOnSuccess(response -> Optional.ofNullable(response)
-				.ifPresent(Response::close))
-			.ignoreElement();
-	}
-
+	@SuppressWarnings("unchecked")
 	private T mapResponse(Response response) throws IOException, MeshRestClientMessageException {
 		throwOnError(response);
+
+		Optional.ofNullable(meshClient).map(MeshRestClient::getAuthentication).ifPresent(auth -> {
+			if (auth.isLoginToken()) {
+				List<Cookie> cookies = Cookie.parseAll(HttpUrl.get(url), response.headers());
+				for (Cookie cookie : cookies) {
+					if (StringUtils.equals("mesh.token", cookie.name())) {
+						String loginToken = cookie.value();
+						if (!StringUtils.isBlank(loginToken)) {
+							auth.setLoginToken(loginToken);
+						}
+						break;
+					}
+				}
+			}
+		});
 
 		String contentType = response.header("Content-Type");
 		if (!response.isSuccessful()) {
@@ -225,8 +304,8 @@ public class MeshOkHttpRequestImpl<T> implements MeshRequest<T> {
 		} else if (resultClass.isAssignableFrom(MeshWebrootResponse.class)) {
 			return (T) new OkHttpWebrootResponse(response);
 		} else if (resultClass.isAssignableFrom(MeshWebrootFieldResponse.class)) {
-			return (T) new OkHttpWebrootFieldResponse(response);
-		} else if (contentType != null && contentType.startsWith("application/json")) {
+			return (T) new OkHttpWebrootFieldResponse(response, config.isMinifyJson());
+		} else if (contentType != null && contentType.startsWith("application/json") && !resultClass.isAssignableFrom(String.class)) {
 			return JsonUtil.readValue(response.body().string(), resultClass);
 		} else if (resultClass.isAssignableFrom(String.class)) {
 			return (T) response.body().string();
@@ -326,6 +405,66 @@ public class MeshOkHttpRequestImpl<T> implements MeshRequest<T> {
 			public T getBody() {
 				return body.get();
 			}
+
+			@Override
+			public void close() {
+				Optional.ofNullable(response).map(Response::body).ifPresent(ResponseBody::close);
+			}
 		});
+	}
+
+	/**
+	 * Notification handler for {@link Observable#retryWhen(io.reactivex.functions.Function) retryWhen()} which causes
+	 * retries for network related exceptions up to {@code maxRetries}, with an optional {@code delay} in milliseconds.
+	 *
+	 * <p>
+	 *     <strong>TODO:</strong> This should probably be moved to a generic utility class, but I did not want to
+	 *     introduce a dependency to mesh-common for the rest client.
+	 * </p>
+	 *
+	 * @see #isNotNetworkError(Throwable)
+	 *
+	 * @param maxRetries The maximum number of retries
+	 * @param delay The delay in milliseconds for each retry, ignored when &lt; 0.
+	 * @return A notification handler for {@code retryWhen()} which makes at most {@code maxRetries} retries on
+	 * 		network problems
+	 */
+	private io.reactivex.functions.Function<Flowable<Throwable>, Publisher<Object>> retryOnNetworkErrors(int maxRetries, int delay) {
+		AtomicInteger retryCount = new AtomicInteger(0);
+
+		return errors -> errors.flatMap(err -> {
+			if (isNotNetworkError(err) || retryCount.getAndIncrement() > maxRetries) {
+				// Not a network problem or max retries reached, forward the error to stop retrying.
+				return Flowable.error(err);
+			}
+
+			Flowable<Object> ret = Flowable.just(new Object());
+
+			if (delay > 0) {
+				ret = ret.delay(delay, TimeUnit.MILLISECONDS);
+			}
+
+			return ret;
+		});
+	}
+
+	/**
+	 * Check if the given throwable or its cause is a {@link SocketException},
+	 * or a {@link SocketTimeoutException}.
+	 *
+	 * @param t The error to check
+	 * @return {@code true} if the given error is a {@code SocketException} or
+	 * 		a {@code SocketTimeoutException}, and {@code false} otherwise.
+	 */
+	private boolean isNotNetworkError(Throwable t) {
+		if (t == null) {
+			return true;
+		}
+
+		if (t instanceof SocketException || t instanceof SocketTimeoutException) {
+			return false;
+		}
+
+		return isNotNetworkError(t.getCause());
 	}
 }

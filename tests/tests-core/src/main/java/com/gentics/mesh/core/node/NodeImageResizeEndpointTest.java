@@ -16,13 +16,17 @@ import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
+import java.util.Arrays;
+import java.util.Collection;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 
-import javax.imageio.ImageIO;
-
 import org.apache.commons.io.IOUtils;
 import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.Parameterized;
+import org.junit.runners.Parameterized.Parameter;
+import org.junit.runners.Parameterized.Parameters;
 
 import com.gentics.mesh.core.data.dao.ContentDao;
 import com.gentics.mesh.core.data.node.HibNode;
@@ -41,11 +45,31 @@ import com.gentics.mesh.rest.client.MeshBinaryResponse;
 import com.gentics.mesh.test.MeshTestSetting;
 import com.gentics.mesh.test.assertj.MeshCoreAssertion;
 import com.gentics.mesh.test.context.AbstractMeshTest;
+import com.gentics.mesh.test.util.ImageTestUtil;
 
 import io.vertx.core.buffer.Buffer;
 
 @MeshTestSetting(testSize = FULL, startServer = true)
+@RunWith(Parameterized.class)
 public class NodeImageResizeEndpointTest extends AbstractMeshTest {
+
+	@Parameters(name = "{index}: filetype={0}, extension={1}, resized={2}")
+	public static Collection<Object[]> paramData() {
+		return Arrays.asList(
+			new Object[] { "jpeg", "jpg", "jpeg" },
+			new Object[] { "webp", "webp", "webp" },
+			new Object[] { "pjpeg", "jpg", "jpeg" },
+			new Object[] { "jpg", "jpg", "jpeg" });
+	}
+
+	@Parameter(0)
+	public String fileType;
+
+	@Parameter(1)
+	public String extension;
+
+	@Parameter(2)
+	public String resized;
 
 	@Test
 	public void testImageResize() throws Exception {
@@ -53,7 +77,7 @@ public class NodeImageResizeEndpointTest extends AbstractMeshTest {
 		String uuid = tx(() -> node.getUuid());
 
 		// 1. Upload image
-		uploadImage(node, "en", "image");
+		uploadImageType(node, "en", "image", extension, fileType);
 
 		// 2. Resize image
 		ImageManipulationParameters params = new ImageManipulationParametersImpl().setWidth(100).setHeight(102);
@@ -72,13 +96,98 @@ public class NodeImageResizeEndpointTest extends AbstractMeshTest {
 		String nodeUuid = tx(() -> node.getUuid());
 
 		// 1. Upload image
-		uploadImage(node, "en", "image");
+		uploadImageType(node, "en", "image", extension, fileType);
 		ImageManipulatorOptions options = options().getImageOptions();
 
 		// 2. Resize image
 		ImageManipulationParameters params = new ImageManipulationParametersImpl().setWidth(options.getMaxWidth() + 1).setHeight(102);
 		call(() -> client().downloadBinaryField(PROJECT_NAME, nodeUuid, "en", "image", params), BAD_REQUEST,
 			"image_error_width_limit_exceeded", String.valueOf(options.getMaxWidth()), String.valueOf(options.getMaxWidth() + 1));
+	}
+	/**
+	 * Test resizing an image, which exceeds the maximum allowed resize height proportionally by only setting a new width
+	 * @throws Exception
+	 */
+	@Test
+	public void testLargeImageResizeProp() throws Exception {
+		HibNode node = folder("news");
+		String nodeUuid = tx(() -> node.getUuid());
+
+		// 1. Upload large image
+		uploadImageType(node, "en", "image", "blume_large", extension, fileType);
+
+		// 2. Resize image
+		ImageManipulationParameters params = new ImageManipulationParametersImpl().setWidth(100).setResizeMode(ResizeMode.PROP);
+		MeshBinaryResponse result = call(() -> client().downloadBinaryField(PROJECT_NAME, nodeUuid, "en", "image", params));
+
+		// 3. Validate the resized image
+		validateResizeImage(result, null, params, 100, 118);
+	}
+
+	/**
+	 * Test resizing an image, which exceeds the maximum allowed resize height proportionally by setting a new width and the height to "auto"
+	 * @throws Exception
+	 */
+	@Test
+	public void testLargeImageResizePropWithAuto() throws Exception {
+		HibNode node = folder("news");
+		String nodeUuid = tx(() -> node.getUuid());
+
+		// 1. Upload large image
+		uploadImageType(node, "en", "image", "blume_large", extension, fileType);
+
+		// 2. Resize image
+		ImageManipulationParameters params = new ImageManipulationParametersImpl().setWidth(100).setHeight("auto").setResizeMode(ResizeMode.PROP);
+		MeshBinaryResponse result = call(() -> client().downloadBinaryField(PROJECT_NAME, nodeUuid, "en", "image", params));
+
+		// 3. Validate the resized image
+		validateResizeImage(result, null, params, 100, 118);
+	}
+
+	/**
+	 * Test resizing an image, which exceeds the maximum allowed resize height proportionally by only setting a new width (which would result with a height too large)
+	 * @throws Exception
+	 */
+	@Test
+	public void testLargeImageResizePropTooLarge() throws Exception {
+		HibNode node = folder("news");
+		String nodeUuid = tx(() -> node.getUuid());
+
+		// 1. Upload large image
+		uploadImageType(node, "en", "image", "blume_large", extension, fileType);
+		int originalWidth = 2000;
+		int originalHeight = 2372;
+
+		// 2. Resize image
+		ImageManipulatorOptions options = options().getImageOptions();
+		int requestedWidth = options.getMaxWidth();
+		int expectedHeight = originalHeight * requestedWidth / originalWidth;
+		ImageManipulationParameters params = new ImageManipulationParametersImpl().setWidth(requestedWidth).setResizeMode(ResizeMode.PROP);
+		call(() -> client().downloadBinaryField(PROJECT_NAME, nodeUuid, "en", "image", params), BAD_REQUEST,
+				"image_error_height_limit_exceeded", String.valueOf(options.getMaxWidth()), String.valueOf(expectedHeight));
+	}
+
+	/**
+	 * Test resizing an image, which exceeds the maximum allowed resize height proportionally by setting a new width (which would result with a height too large) and the height to "auto"
+	 * @throws Exception
+	 */
+	@Test
+	public void testLargeImageResizePropWithAutoTooLarge() throws Exception {
+		HibNode node = folder("news");
+		String nodeUuid = tx(() -> node.getUuid());
+
+		// 1. Upload large image
+		uploadImageType(node, "en", "image", "blume_large", extension, fileType);
+		int originalWidth = 2000;
+		int originalHeight = 2372;
+
+		// 2. Resize image
+		ImageManipulatorOptions options = options().getImageOptions();
+		int requestedWidth = options.getMaxWidth();
+		int expectedHeight = originalHeight * requestedWidth / originalWidth;
+		ImageManipulationParameters params = new ImageManipulationParametersImpl().setWidth(requestedWidth).setHeight("auto").setResizeMode(ResizeMode.PROP);
+		call(() -> client().downloadBinaryField(PROJECT_NAME, nodeUuid, "en", "image", params), BAD_REQUEST,
+				"image_error_height_limit_exceeded", String.valueOf(options.getMaxWidth()), String.valueOf(expectedHeight));
 	}
 
 	@Test
@@ -87,7 +196,7 @@ public class NodeImageResizeEndpointTest extends AbstractMeshTest {
 		String nodeUuid = tx(() -> node.getUuid());
 
 		// 1. Upload image
-		uploadImage(node, "en", "image");
+		uploadImageType(node, "en", "image", extension, fileType);
 		ImageManipulatorOptions options = options().getImageOptions();
 
 		// 2. Resize image
@@ -105,7 +214,7 @@ public class NodeImageResizeEndpointTest extends AbstractMeshTest {
 	public void testTransformImage() throws Exception {
 		HibNode node = folder("news");
 		String nodeUuid = tx(() -> node.getUuid());
-		String version = uploadImage(node, "en", "image").getVersion();
+		String version = uploadImageType(node, "en", "image", extension, fileType).getVersion();
 
 		MeshCoreAssertion.assertThat(testContext).hasUploads(1, 1).hasTempFiles(0).hasTempUploads(0);
 
@@ -113,7 +222,7 @@ public class NodeImageResizeEndpointTest extends AbstractMeshTest {
 		ImageManipulationParameters params = new ImageManipulationParametersImpl().setWidth(100);
 		NodeResponse transformResponse = call(() -> client().transformNodeBinaryField(PROJECT_NAME, nodeUuid, "en", version, "image", params));
 		assertEquals("The image should have been resized", 100, transformResponse.getFields().getBinaryField("image").getWidth().intValue());
-		MeshCoreAssertion.assertThat(testContext).hasUploads(2, 2).hasTempFiles(0).hasTempUploads(0);
+		MeshCoreAssertion.assertThat(testContext).hasUploads(1, 2).hasTempFiles(0).hasTempUploads(0);
 
 		// 3. Validate that a new version was created
 		String newNumber = transformResponse.getVersion();
@@ -130,14 +239,14 @@ public class NodeImageResizeEndpointTest extends AbstractMeshTest {
 	public void testTransformWithFocalPoint() throws IOException {
 		HibNode node = folder("news");
 		String nodeUuid = tx(() -> node.getUuid());
-		String version = uploadImage(node, "en", "image").getVersion();
+		String version = uploadImageType(node, "en", "image", extension, fileType).getVersion();
 		MeshCoreAssertion.assertThat(testContext).hasUploads(1, 1).hasTempFiles(0).hasTempUploads(0);
 
 		// 2. Transform the image
 		ImageManipulationParameters params = new ImageManipulationParametersImpl().setWidth(100).setFocalPoint(0.3f, 0.4f);
 		NodeResponse transformResponse = call(() -> client().transformNodeBinaryField(PROJECT_NAME, nodeUuid, "en", version, "image", params));
 		assertEquals("The image should have been resized", 100, transformResponse.getFields().getBinaryField("image").getWidth().intValue());
-		MeshCoreAssertion.assertThat(testContext).hasUploads(2, 2).hasTempFiles(0).hasTempUploads(0);
+		MeshCoreAssertion.assertThat(testContext).hasUploads(1, 2).hasTempFiles(0).hasTempUploads(0);
 
 		NodeResponse response3 = call(() -> client().findNodeByUuid(projectName(), nodeUuid));
 
@@ -149,13 +258,13 @@ public class NodeImageResizeEndpointTest extends AbstractMeshTest {
 	public void testTransformWithOnlyFocalPoint() throws IOException {
 		HibNode node = folder("news");
 		String nodeUuid = tx(() -> node.getUuid());
-		String version = uploadImage(node, "en", "image").getVersion();
+		String version = uploadImageType(node, "en", "image", extension, fileType).getVersion();
 		MeshCoreAssertion.assertThat(testContext).hasUploads(1, 1).hasTempFiles(0).hasTempUploads(0);
 
 		// 2. Transform the image
 		ImageManipulationParameters params = new ImageManipulationParametersImpl().setFocalPoint(0.3f, 0.4f);
 		call(() -> client().transformNodeBinaryField(PROJECT_NAME, nodeUuid, "en", version, "image", params));
-		MeshCoreAssertion.assertThat(testContext).hasUploads(2, 2).hasTempFiles(0).hasTempUploads(0);
+		MeshCoreAssertion.assertThat(testContext).hasUploads(1, 2).hasTempFiles(0).hasTempUploads(0);
 
 		NodeResponse response3 = call(() -> client().findNodeByUuid(projectName(), nodeUuid));
 
@@ -169,7 +278,7 @@ public class NodeImageResizeEndpointTest extends AbstractMeshTest {
 		String uuid = tx(() -> node.getUuid());
 
 		// 1. Upload image
-		String version = uploadImage(node, "en", "image").getVersion();
+		String version = uploadImageType(node, "en", "image", extension, fileType).getVersion();
 		MeshCoreAssertion.assertThat(testContext).hasUploads(1, 1).hasTempFiles(0).hasTempUploads(0);
 
 		// 2. Transform the image
@@ -180,7 +289,7 @@ public class NodeImageResizeEndpointTest extends AbstractMeshTest {
 
 		NodeResponse transformResponse = call(() -> client().transformNodeBinaryField(PROJECT_NAME, uuid, "en", version, "image", params));
 		assertEquals("The image should have been resized", 100, transformResponse.getFields().getBinaryField("image").getWidth().intValue());
-		MeshCoreAssertion.assertThat(testContext).hasUploads(2, 2).hasTempFiles(0).hasTempUploads(0);
+		MeshCoreAssertion.assertThat(testContext).hasUploads(1, 2).hasTempFiles(0).hasTempUploads(0);
 
 		// 3. Validate that a new version was created
 		String newNumber = transformResponse.getVersion();
@@ -200,7 +309,7 @@ public class NodeImageResizeEndpointTest extends AbstractMeshTest {
 		String uuid = tx(() -> node.getUuid());
 
 		// 1. Upload image
-		String version = uploadImage(node, "en", "image").getVersion();
+		String version = uploadImageType(node, "en", "image", extension, fileType).getVersion();
 		MeshCoreAssertion.assertThat(testContext).hasUploads(1, 1).hasTempFiles(0).hasTempUploads(0);
 
 		// 2. Transform the image
@@ -210,7 +319,7 @@ public class NodeImageResizeEndpointTest extends AbstractMeshTest {
 
 		NodeResponse transformResponse = call(() -> client().transformNodeBinaryField(PROJECT_NAME, uuid, "en", version, "image", params));
 		assertEquals("The image should have been resized", 200, transformResponse.getFields().getBinaryField("image").getWidth().intValue());
-		MeshCoreAssertion.assertThat(testContext).hasUploads(2, 2).hasTempFiles(0).hasTempUploads(0);
+		MeshCoreAssertion.assertThat(testContext).hasUploads(1, 2).hasTempFiles(0).hasTempUploads(0);
 
 		// 3. Validate that a new version was created
 		String newNumber = transformResponse.getVersion();
@@ -229,7 +338,7 @@ public class NodeImageResizeEndpointTest extends AbstractMeshTest {
 		String uuid = tx(() -> node.getUuid());
 
 		// 1. Upload image
-		String version = uploadImage(node, "en", "image").getVersion();
+		String version = uploadImageType(node, "en", "image", extension, fileType).getVersion();
 		MeshCoreAssertion.assertThat(testContext).hasUploads(1, 1).hasTempFiles(0).hasTempUploads(0);
 
 		// 2. Transform the image
@@ -240,7 +349,7 @@ public class NodeImageResizeEndpointTest extends AbstractMeshTest {
 		NodeResponse transformResponse = call(() -> client().transformNodeBinaryField(PROJECT_NAME, uuid, "en", version, "image", params));
 		assertEquals("The image should have been resized", 200, transformResponse.getFields().getBinaryField("image").getHeight().intValue());
 		assertEquals("The image should use the original width of 1160", 1160, transformResponse.getFields().getBinaryField("image").getWidth().intValue());
-		MeshCoreAssertion.assertThat(testContext).hasUploads(2, 2).hasTempFiles(0).hasTempUploads(0);
+		MeshCoreAssertion.assertThat(testContext).hasUploads(1, 2).hasTempFiles(0).hasTempUploads(0);
 
 		// 3. Validate that a new version was created
 		String newNumber = transformResponse.getVersion();
@@ -259,7 +368,7 @@ public class NodeImageResizeEndpointTest extends AbstractMeshTest {
 		String uuid = tx(() -> node.getUuid());
 
 		// 1. Upload image
-		String version = uploadImage(node, "en", "image").getVersion();
+		String version = uploadImageType(node, "en", "image", extension, fileType).getVersion();
 		MeshCoreAssertion.assertThat(testContext).hasUploads(1, 1).hasTempFiles(0).hasTempUploads(0);
 
 		// 2. Transform the image
@@ -270,7 +379,7 @@ public class NodeImageResizeEndpointTest extends AbstractMeshTest {
 		NodeResponse transformResponse = call(() -> client().transformNodeBinaryField(PROJECT_NAME, uuid, "en", version, "image", params));
 		assertEquals("The image should have benn in the original Height of 1376", 1376, transformResponse.getFields().getBinaryField("image").getHeight().intValue());
 		assertEquals("The image should have been resized", 200, transformResponse.getFields().getBinaryField("image").getWidth().intValue());
-		MeshCoreAssertion.assertThat(testContext).hasUploads(2, 2).hasTempFiles(0).hasTempUploads(0);
+		MeshCoreAssertion.assertThat(testContext).hasUploads(1, 2).hasTempFiles(0).hasTempUploads(0);
 
 		// 3. Validate that a new version was created
 		String newNumber = transformResponse.getVersion();
@@ -289,7 +398,7 @@ public class NodeImageResizeEndpointTest extends AbstractMeshTest {
 		String uuid = tx(() -> node.getUuid());
 
 		// 1. Upload image
-		String version = uploadImage(node, "en", "image").getVersion();
+		String version = uploadImageType(node, "en", "image", extension, fileType).getVersion();
 		MeshCoreAssertion.assertThat(testContext).hasUploads(1, 1).hasTempFiles(0).hasTempUploads(0);
 
 		// 2. Transform the image
@@ -300,7 +409,7 @@ public class NodeImageResizeEndpointTest extends AbstractMeshTest {
 		NodeResponse transformResponse = call(() -> client().transformNodeBinaryField(PROJECT_NAME, uuid, "en", version, "image", params));
 		assertEquals("The image should have been in the original width of 1160px", 1160, transformResponse.getFields().getBinaryField("image").getWidth().intValue());
 		assertEquals("The image should have been in the original height of  1376px", 1376, transformResponse.getFields().getBinaryField("image").getHeight().intValue());
-		MeshCoreAssertion.assertThat(testContext).hasUploads(2, 2).hasTempFiles(0).hasTempUploads(0);
+		MeshCoreAssertion.assertThat(testContext).hasUploads(1, 2).hasTempFiles(0).hasTempUploads(0);
 
 		// 3. Validate that a new version was created
 		String newNumber = transformResponse.getVersion();
@@ -319,7 +428,7 @@ public class NodeImageResizeEndpointTest extends AbstractMeshTest {
 		String uuid = tx(() -> node.getUuid());
 
 		// 1. Upload image
-		String version = uploadImage(node, "en", "image").getVersion();
+		String version = uploadImageType(node, "en", "image", extension, fileType).getVersion();
 		MeshCoreAssertion.assertThat(testContext).hasUploads(1, 1).hasTempFiles(0).hasTempUploads(0);
 
 		// 2. Transform the image
@@ -330,7 +439,7 @@ public class NodeImageResizeEndpointTest extends AbstractMeshTest {
 
 		NodeResponse transformResponse = call(() -> client().transformNodeBinaryField(PROJECT_NAME, uuid, "en", version, "image", params));
 		assertEquals("The image should have been resized", 100, transformResponse.getFields().getBinaryField("image").getWidth().intValue());
-		MeshCoreAssertion.assertThat(testContext).hasUploads(2, 2).hasTempFiles(0).hasTempUploads(0);
+		MeshCoreAssertion.assertThat(testContext).hasUploads(1, 2).hasTempFiles(0).hasTempUploads(0);
 
 		// 3. Validate that a new version was created
 		String newNumber = transformResponse.getVersion();
@@ -349,13 +458,13 @@ public class NodeImageResizeEndpointTest extends AbstractMeshTest {
 		String nodeUuid = tx(() -> node.getUuid());
 
 		// 1. Upload image
-		NodeResponse response = uploadImage(node, "en", "image");
+		NodeResponse response = uploadImageType(node, "en", "image", extension, fileType);
 		MeshCoreAssertion.assertThat(testContext).hasUploads(1, 1).hasTempFiles(0).hasTempUploads(0);
 
 		// 2. Transform the image
 		ImageManipulationParametersImpl params = new ImageManipulationParametersImpl();
 		call(() -> client().transformNodeBinaryField(PROJECT_NAME, nodeUuid, "en", response.getVersion(), "image", params));
-		MeshCoreAssertion.assertThat(testContext).hasUploads(2, 2).hasTempFiles(0).hasTempUploads(0);
+		MeshCoreAssertion.assertThat(testContext).hasUploads(1, 2).hasTempFiles(0).hasTempUploads(0);
 	}
 
 	@Test
@@ -395,12 +504,12 @@ public class NodeImageResizeEndpointTest extends AbstractMeshTest {
 	}
 
 	@Test
-	public void testResizeWithFocalPoint() throws IOException {
+	public void testResizeWithFocalPoint() throws Exception {
 		HibNode node = folder("news");
 		String nodeUuid = tx(() -> node.getUuid());
 
 		// 1. Upload image
-		NodeResponse response = uploadImage(node, "en", "image");
+		NodeResponse response = uploadImageType(node, "en", "image", extension, fileType);
 
 		// 2. Update the binary field and set the focal point via a node update request
 		NodeUpdateRequest updateRequest = new NodeUpdateRequest();
@@ -415,8 +524,9 @@ public class NodeImageResizeEndpointTest extends AbstractMeshTest {
 
 		// 2. Resize image
 		ImageManipulationParameters params = new ImageManipulationParametersImpl().setWidth(600).setHeight(102);
-		call(() -> client().downloadBinaryField(PROJECT_NAME, nodeUuid, "en", "image", params));
+		MeshBinaryResponse result = call(() -> client().downloadBinaryField(PROJECT_NAME, nodeUuid, "en", "image", params));
 
+		validateResizeImage(result, null, params, 600, 102);
 	}
 
 	@Test
@@ -425,7 +535,7 @@ public class NodeImageResizeEndpointTest extends AbstractMeshTest {
 		String nodeUuid = tx(() -> node.getUuid());
 
 		// 1. Upload image
-		uploadImage(node, "en", "image");
+		uploadImageType(node, "en", "image", extension, fileType);
 
 		// 2. Zoom into image
 		ImageManipulationParameters params = new ImageManipulationParametersImpl().setWidth(2048).setHeight(2048);
@@ -441,7 +551,7 @@ public class NodeImageResizeEndpointTest extends AbstractMeshTest {
 		HibNode node = folder("news");
 
 		// 1. Upload image
-		NodeResponse response = uploadImage(node, "en", "image");
+		NodeResponse response = uploadImageType(node, "en", "image", extension, fileType);
 
 		// 2. Update the binary field and set the focal point
 		NodeUpdateRequest updateRequest = new NodeUpdateRequest();
@@ -481,7 +591,7 @@ public class NodeImageResizeEndpointTest extends AbstractMeshTest {
 		String uuid = tx(() -> node.getUuid());
 
 		// 1. Upload image
-		String version = uploadImage(node, "en", "image").getVersion();
+		String version = uploadImageType(node, "en", "image", extension, fileType).getVersion();
 
 		// 2. Transform the image
 		ImageManipulationParameters params = new ImageManipulationParametersImpl().setWidth(100);
@@ -496,16 +606,16 @@ public class NodeImageResizeEndpointTest extends AbstractMeshTest {
 		MeshBinaryResponse result = call(() -> client().downloadBinaryField(PROJECT_NAME, uuid, "en", "image"));
 
 		// 5. Validate the filename
-		assertEquals("blume.jpg", result.getFilename());
+		assertEquals("blume." + extension, result.getFilename());
 	}
 
 	@Test
 	public void testWebrootAfterTransform() throws IOException {
 		NodeResponse imageNode = createBinaryContent().blockingGet();
-		NodeResponse image = uploadImage(imageNode, "en", "binary");
+		NodeResponse image = uploadImage(imageNode, "en", "binary", extension, fileType);
 		String version = image.getVersion();
 		String uuid = image.getUuid();
-		String path = "/blume.jpg";
+		String path = "/blume." + extension;
 
 		// Make sure that the image is found via webroot
 		client().webroot(PROJECT_NAME, path).blockingAwait();
@@ -521,23 +631,27 @@ public class NodeImageResizeEndpointTest extends AbstractMeshTest {
 
 	private void validateResizeImage(MeshBinaryResponse download, HibBinaryField binaryField, ImageManipulationParameters params,
 									 int expectedWidth, int expectedHeight) throws Exception {
-		File targetFile = new File("target", UUID.randomUUID() + "_resized.jpg");
+		assertThat(download.getContentType())
+			.as("Resized image filetype")
+			.isEqualTo("image/" + resized);
+
+		File targetFile = new File("target", UUID.randomUUID() + "_resized." + extension);
 		CountDownLatch latch = new CountDownLatch(1);
 		byte[] bytes = IOUtils.toByteArray(download.getStream());
 		download.close();
-		vertx().fileSystem().writeFile(targetFile.getAbsolutePath(), Buffer.buffer(bytes), rh -> {
+		vertx().fileSystem().writeFile(targetFile.getAbsolutePath(), Buffer.buffer(bytes)).andThen(rh -> {
 			assertTrue(rh.succeeded());
 			latch.countDown();
 		});
 		failingLatch(latch);
 		assertThat(targetFile).exists();
-		BufferedImage img = ImageIO.read(targetFile);
+		BufferedImage img = ImageTestUtil.read(targetFile);
 		//ImageTestUtil.displayImage(img);
 		assertEquals(expectedWidth, img.getWidth());
 		assertEquals(expectedHeight, img.getHeight());
 
 		if (binaryField != null) {
-			CacheFileInfo cacheFile = meshDagger().imageManipulator().getCacheFilePath(binaryField.getBinary().getSHA512Sum(), params).blockingGet();
+			CacheFileInfo cacheFile = meshDagger().imageManipulator().getCacheFilePath(binaryField.getBinary(), params).blockingGet();
 			assertTrue("The cache file could not be found in the cache directory. {" + cacheFile.path + "}", cacheFile.exists);
 		}
 	}

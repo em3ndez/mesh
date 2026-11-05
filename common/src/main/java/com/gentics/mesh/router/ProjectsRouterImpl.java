@@ -15,8 +15,8 @@ import com.gentics.mesh.core.db.Database;
 import com.gentics.mesh.shared.SharedKeys;
 
 import io.vertx.core.Vertx;
-import io.vertx.core.logging.Logger;
-import io.vertx.core.logging.LoggerFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import io.vertx.ext.web.Router;
 
 /**
@@ -36,16 +36,16 @@ public class ProjectsRouterImpl implements ProjectsRouter {
 
 	private final Vertx vertx;
 
-	private APIRouterImpl apiRouter;
+	private final APIRouterImpl apiRouter;
 
-	private Router router;
+	private final Router router;
 
 	public ProjectsRouterImpl(Vertx vertx, APIRouterImpl apiRouter) {
 		this.vertx = vertx;
 		this.apiRouter = apiRouter;
 		this.router = Router.router(vertx);
 		this.projectRouter = new ProjectRouterImpl(vertx, apiRouter.getRoot().getStorage());
-		apiRouter.getRouter().mountSubRouter("/", router);
+		apiRouter.getRouter().route("/*").subRouter(router);
 	}
 
 	@Override
@@ -74,7 +74,6 @@ public class ProjectsRouterImpl implements ProjectsRouter {
 					return tx.projectDao().findByName(name);
 				});
 				if (project == null) {
-					log.warn("Project for name {" + name + "} could not be found.");
 					ctx.fail(error(NOT_FOUND, "project_not_found", name));
 					return;
 				}
@@ -84,8 +83,8 @@ public class ProjectsRouterImpl implements ProjectsRouter {
 			// Note: the end slash in the subrouter mount point is important, otherwise the subrouter for e.g. /project
 			// (for a project named "project") would also match for the route /projects, which will cause problems,
 			// if the project "project" is deleted
-			router.mountSubRouter("/" + encodedName + "/", projectRouter);
-			projectRouter.mountSubRouter("/", this.projectRouter.getRouter());
+			router.route("/" + encodedName + "/*").subRouter(projectRouter);
+			projectRouter.route("/*").subRouter(this.projectRouter.getRouter());
 			// mountSubRoutersForProjectRouter(projectRouter, encodedName);
 		}
 		return projectRouter;
@@ -122,4 +121,8 @@ public class ProjectsRouterImpl implements ProjectsRouter {
 		return projectRouter;
 	}
 
+	@Override
+	public Router getRouter() {
+		return router;
+	}
 }

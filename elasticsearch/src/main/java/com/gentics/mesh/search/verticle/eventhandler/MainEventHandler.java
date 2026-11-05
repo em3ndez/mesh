@@ -7,6 +7,7 @@ import static com.gentics.mesh.search.verticle.eventhandler.Util.toMultiMap;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Stream;
 
 import javax.inject.Inject;
@@ -30,8 +31,8 @@ import com.gentics.mesh.search.verticle.eventhandler.project.ProjectUpdateEventH
 
 import io.reactivex.Completable;
 import io.reactivex.Flowable;
-import io.vertx.core.logging.Logger;
-import io.vertx.core.logging.LoggerFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Maps events from mesh to elastic search requests.
@@ -68,6 +69,12 @@ public class MainEventHandler implements EventHandler {
 
 	private final CheckIndicesHandler checkIndicesHandler;
 
+	/**
+	 * Zusaetzliche Event-Handler aus anderen Modulen (Dagger-Multibinding). Leer, wenn keiner
+	 * beitraegt - dafuer sorgt die {@code @Multibinds}-Deklaration in {@code CommonBindModule}.
+	 */
+	private final Set<EventHandler> customHandlers;
+
 	@Inject
 	public MainEventHandler(SyncEventHandler syncEventHandler,
 							EventHandlerFactory eventHandlerFactory,
@@ -82,7 +89,8 @@ public class MainEventHandler implements EventHandler {
 							MicroschemaMigrationEventHandler microschemaMigrationEventHandler,
 							PermissionChangedEventHandler permissionChangedEventHandler,
 							GroupUserAssignmentHandler userGroupAssignmentHandler,
-							ProjectUpdateEventHandler projectUpdateEventHandler, ProjectCreateEventHandler projectCreateEventHandler, CheckIndicesHandler checkIndicesHandler) {
+							ProjectUpdateEventHandler projectUpdateEventHandler, ProjectCreateEventHandler projectCreateEventHandler, CheckIndicesHandler checkIndicesHandler,
+							Set<EventHandler> customHandlers) {
 		this.syncEventHandler = syncEventHandler;
 		this.eventHandlerFactory = eventHandlerFactory;
 		this.groupEventHandler = groupEventHandler;
@@ -102,6 +110,7 @@ public class MainEventHandler implements EventHandler {
 		this.projectUpdateEventHandler = projectUpdateEventHandler;
 		this.projectCreateEventHandler = projectCreateEventHandler;
 		this.checkIndicesHandler = checkIndicesHandler;
+		this.customHandlers = customHandlers;
 
 		handlers = createHandlers();
 	}
@@ -111,7 +120,7 @@ public class MainEventHandler implements EventHandler {
 	 * @return
 	 */
 	private Map<MeshEvent, List<EventHandler>> createHandlers() {
-		return Stream.of(
+		return Stream.concat(Stream.of(
 			syncEventHandler,
 			clearEventHandler,
 			forEvent(MeshEvent.SEARCH_FLUSH_REQUEST, MainEventHandler::flushRequest),
@@ -136,7 +145,7 @@ public class MainEventHandler implements EventHandler {
 			permissionChangedEventHandler,
 			userGroupAssignmentHandler,
 			checkIndicesHandler
-		).collect(toMultiMap(EventHandler::handledEvents));
+		), customHandlers.stream()).collect(toMultiMap(EventHandler::handledEvents));
 	}
 
 	/**
@@ -157,8 +166,8 @@ public class MainEventHandler implements EventHandler {
 		return Flowable.fromIterable(handlers.get(messageEvent.event))
 			.flatMap(handler -> handler.handle(messageEvent), 1)
 			.doOnError(err -> {
-				String body = messageEvent.message == null ? null : messageEvent.message.toJson();
-				logElasticSearchError(err, () -> log.error("Error while handling event {} with body {}", messageEvent.event, body, err));
+				String body = messageEvent.message == null ? null : messageEvent.message.toJson(false);
+				logElasticSearchError(err, () -> log.error("Error while handling event " + messageEvent.event + " with body " + body, err));
 			});
 	}
 

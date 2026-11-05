@@ -2,18 +2,27 @@ package com.gentics.mesh.parameter;
 
 import com.gentics.mesh.handler.ActionContext;
 import com.gentics.mesh.parameter.impl.BackupParametersImpl;
+import com.gentics.mesh.parameter.impl.BinaryCheckParametersImpl;
+import com.gentics.mesh.parameter.impl.BranchParametersImpl;
+import com.gentics.mesh.parameter.impl.ConsistencyCheckParametersImpl;
 import com.gentics.mesh.parameter.impl.DeleteParametersImpl;
+import com.gentics.mesh.parameter.impl.DisplayParametersImpl;
+import com.gentics.mesh.parameter.impl.EtagParametersImpl;
 import com.gentics.mesh.parameter.impl.GenericParametersImpl;
 import com.gentics.mesh.parameter.impl.ImageManipulationParametersImpl;
+import com.gentics.mesh.parameter.impl.ImageManipulationRetrievalParametersImpl;
 import com.gentics.mesh.parameter.impl.IndexMaintenanceParametersImpl;
 import com.gentics.mesh.parameter.impl.JobParametersImpl;
+import com.gentics.mesh.parameter.impl.LanguageParametersImpl;
 import com.gentics.mesh.parameter.impl.NodeParametersImpl;
 import com.gentics.mesh.parameter.impl.PagingParametersImpl;
+import com.gentics.mesh.parameter.impl.ProjectLoadParametersImpl;
 import com.gentics.mesh.parameter.impl.ProjectPurgeParametersImpl;
 import com.gentics.mesh.parameter.impl.PublishParametersImpl;
 import com.gentics.mesh.parameter.impl.RolePermissionParametersImpl;
 import com.gentics.mesh.parameter.impl.SchemaUpdateParametersImpl;
 import com.gentics.mesh.parameter.impl.SearchParametersImpl;
+import com.gentics.mesh.parameter.impl.SortingParametersImpl;
 import com.gentics.mesh.parameter.impl.UserParametersImpl;
 import com.gentics.mesh.parameter.impl.VersioningParametersImpl;
 
@@ -30,8 +39,16 @@ public interface ParameterProviderContext extends ActionContext {
 		return new UserParametersImpl(this);
 	}
 
+	default BranchParameters getBranchParameters() {
+		return new BranchParametersImpl(this);
+	}
+
 	default VersioningParameters getVersioningParameters() {
 		return new VersioningParametersImpl(this);
+	}
+
+	default LanguageParameters getLanguageParameters() {
+		return new LanguageParametersImpl(this);
 	}
 
 	default PagingParameters getPagingParameters() {
@@ -44,6 +61,10 @@ public interface ParameterProviderContext extends ActionContext {
 
 	default ProjectPurgeParameters getProjectPurgeParameters() {
 		return new ProjectPurgeParametersImpl(this);
+	}
+
+	default ProjectLoadParameters getProjectLoadParameters() {
+		return new ProjectLoadParametersImpl(this);
 	}
 
 	default ImageManipulationParameters getImageParameters() {
@@ -66,6 +87,14 @@ public interface ParameterProviderContext extends ActionContext {
 		return new GenericParametersImpl(this);
 	}
 
+	default EtagParameters getEtagParameters() {
+		return new EtagParametersImpl(this);
+	}
+
+	default ImageManipulationRetrievalParameters getImageManipulationRetrievalParameters() {
+		return new ImageManipulationRetrievalParametersImpl(this);
+	}
+
 	default SearchParameters getSearchParameters() {
 		return new SearchParametersImpl(this);
 	}
@@ -80,5 +109,21 @@ public interface ParameterProviderContext extends ActionContext {
 
 	default JobParameters getJobParameters() {
 		return new JobParametersImpl(this);
+	}
+
+	default SortingParameters getSortingParameters() {
+		return new SortingParametersImpl(this);
+	}
+
+	default DisplayParameters getDisplayParameters() {
+		return new DisplayParametersImpl(this);
+	}
+
+	default ConsistencyCheckParameters getConsistencyCheckParameters() {
+		return new ConsistencyCheckParametersImpl(this);
+	}
+
+	default BinaryCheckParameters getBinaryCheckParameters() {
+		return new BinaryCheckParametersImpl(this);
 	}
 }

@@ -5,7 +5,7 @@ import java.util.function.Predicate;
 import javax.inject.Inject;
 import javax.inject.Singleton;
 
-import com.gentics.mesh.context.BulkActionContext;
+import com.gentics.graphqlfilter.filter.operation.FilterOperation;
 import com.gentics.mesh.context.InternalActionContext;
 import com.gentics.mesh.core.action.DAOActionContext;
 import com.gentics.mesh.core.action.GroupDAOActions;
@@ -55,9 +55,7 @@ public class GroupDAOActionsImpl implements GroupDAOActions {
 
 	@Override
 	public Page<? extends HibGroup> loadAll(DAOActionContext ctx, PagingParameters pagingInfo, Predicate<HibGroup> extraFilter) {
-		return ctx.tx().groupDao().findAll(ctx.ac(), pagingInfo, group -> {
-			return extraFilter.test(group);
-		});
+		return ctx.tx().groupDao().findAll(ctx.ac(), pagingInfo, extraFilter);
 	}
 
 	@Override
@@ -66,8 +64,8 @@ public class GroupDAOActionsImpl implements GroupDAOActions {
 	}
 
 	@Override
-	public void delete(Tx tx, HibGroup group, BulkActionContext bac) {
-		tx.groupDao().delete(group, bac);
+	public void delete(Tx tx, HibGroup group) {
+		tx.groupDao().delete(group);
 	}
 
 	@Override
@@ -88,5 +86,10 @@ public class GroupDAOActionsImpl implements GroupDAOActions {
 	@Override
 	public String getETag(Tx tx, InternalActionContext ac, HibGroup group) {
 		return tx.groupDao().getETag(group, ac);
+	}
+
+	@Override
+	public Page<? extends HibGroup> loadAll(DAOActionContext ctx, PagingParameters pagingInfo, FilterOperation<?> extraFilter) {
+		return ctx.tx().groupDao().findAll(ctx.ac(), pagingInfo, extraFilter);
 	}
 }

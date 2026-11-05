@@ -11,18 +11,20 @@ import java.lang.annotation.Target;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicReference;
 
-import com.gentics.mesh.util.CoreTestUtils;
 import org.apache.commons.lang.StringUtils;
 import org.junit.Before;
 
 import com.gentics.mesh.context.impl.MicronodeMigrationContextImpl;
 import com.gentics.mesh.context.impl.NodeMigrationActionContextImpl;
 import com.gentics.mesh.core.data.HibNodeFieldContainer;
+import com.gentics.mesh.core.data.dao.MicroschemaDao;
 import com.gentics.mesh.core.data.dao.NodeDao;
 import com.gentics.mesh.core.data.dao.PersistingBranchDao;
 import com.gentics.mesh.core.data.dao.PersistingMicroschemaDao;
 import com.gentics.mesh.core.data.dao.PersistingSchemaDao;
+import com.gentics.mesh.core.data.dao.SchemaDao;
 import com.gentics.mesh.core.data.job.HibJob;
 import com.gentics.mesh.core.data.node.HibNode;
 import com.gentics.mesh.core.data.node.field.nesting.HibMicronodeField;
@@ -54,6 +56,7 @@ import com.gentics.mesh.core.rest.schema.change.impl.SchemaChangeOperation;
 import com.gentics.mesh.core.rest.schema.impl.MicronodeFieldSchemaImpl;
 import com.gentics.mesh.event.EventQueueBatch;
 import com.gentics.mesh.test.context.AbstractMeshTest;
+import com.gentics.mesh.util.CoreTestUtils;
 import com.gentics.mesh.util.UUIDUtil;
 import com.gentics.mesh.util.VersionNumber;
 
@@ -66,6 +69,7 @@ public abstract class AbstractFieldMigrationTest extends AbstractMeshTest implem
 
 	protected final static String NEWFIELD = "New field";
 	protected final static String NEWFIELDVALUE = "New field value";
+	protected final static String NEWBINARYCHECKSTATUS = "New binary check status";
 	protected final static String OLDFIELD = "Old field";
 	protected final static String OLDFIELDVALUE = "Old field value";
 
@@ -85,7 +89,7 @@ public abstract class AbstractFieldMigrationTest extends AbstractMeshTest implem
 
 	/**
 	 * Generic method to test migration where a field has been removed from the schema/microschema
-	 * 
+	 *
 	 * @param creator
 	 *            creator implementation
 	 * @param dataProvider
@@ -109,7 +113,7 @@ public abstract class AbstractFieldMigrationTest extends AbstractMeshTest implem
 
 	/**
 	 * Generic method to test node migration where a field has been removed from the schema
-	 * 
+	 *
 	 * @param creator
 	 *            creator implementation
 	 * @param dataProvider
@@ -131,16 +135,17 @@ public abstract class AbstractFieldMigrationTest extends AbstractMeshTest implem
 		String schemaName = "migratedSchema";
 
 		// create version 1 of the schema
-		HibSchema container = schemaDao.createPersisted(UUIDUtil.randomUUID());
+		HibSchema container = schemaDao.createPersisted(UUIDUtil.randomUUID(), s -> {
+			s.setName(s.getUuid());
+			s.setCreated(user());
+		});
 		container.generateBucketId();
-		container.setName(container.getUuid());
-		container.setCreated(user());
 		HibSchemaVersion versionA = createSchemaVersion(Tx.get(), container, v -> {
 			CoreTestUtils.fillSchemaVersion(v, container, schemaName, "1.0", creator.create(persistentFieldName), creator.create(
 						removedFieldName));
 			container.setLatestVersion(v);
 		});
-		schemaDao.mergeIntoPersisted(container);		
+		schemaDao.mergeIntoPersisted(container);
 
 		// create version 2 of the schema (with one field removed)
 		HibSchemaVersion versionB = CoreTestUtils.createSchemaVersion(container, schemaName, "2.0", creator.create(persistentFieldName));
@@ -169,6 +174,7 @@ public abstract class AbstractFieldMigrationTest extends AbstractMeshTest implem
 		// migrate the node
 		branchDao.assignSchemaVersion(project().getLatestBranch(), user(), versionB, batch);
 		CommonTx.get().commit();
+		CommonTx.get().data().maybeGetEventQueueBatch().ifPresent(EventQueueBatch::dispatch);
 
 		NodeMigrationActionContextImpl context = new NodeMigrationActionContextImpl();
 		context.setProject(project());
@@ -190,7 +196,7 @@ public abstract class AbstractFieldMigrationTest extends AbstractMeshTest implem
 
 	/**
 	 * Generic method to test micronode migration where a field has been removed from the microschema
-	 * 
+	 *
 	 * @param creator
 	 *            creator implementation
 	 * @param dataProvider
@@ -213,10 +219,11 @@ public abstract class AbstractFieldMigrationTest extends AbstractMeshTest implem
 		String micronodeFieldName = "micronodefield";
 
 		// create version 1 of the microschema
-		HibMicroschema container = microschemaDao.createPersisted(null);
+		HibMicroschema container = microschemaDao.createPersisted(null, m -> {
+			m.setName(microschemaName);
+			m.setCreated(user());	
+		});
 		container.generateBucketId();
-		container.setName(microschemaName);
-		container.setCreated(user());
 		HibMicroschemaVersion versionA = createMicroschemaVersion(container, microschemaName, "1.0", creator.create(persistentFieldName),
 			creator.create(removedFieldName));
 
@@ -242,6 +249,7 @@ public abstract class AbstractFieldMigrationTest extends AbstractMeshTest implem
 		// migrate the node
 		branchDao.assignMicroschemaVersion(project().getLatestBranch(), user(), versionB, createBatch());
 		CommonTx.get().commit();
+		CommonTx.get().data().maybeGetEventQueueBatch().ifPresent(EventQueueBatch::dispatch);
 		MicronodeMigrationContextImpl context = new MicronodeMigrationContextImpl();
 		context.setBranch(project().getLatestBranch());
 		context.setFromVersion(versionA);
@@ -318,10 +326,11 @@ public abstract class AbstractFieldMigrationTest extends AbstractMeshTest implem
 		String schemaName = "migratedSchema";
 
 		// create version 1 of the schema
-		HibSchema container = schemaDao.createPersisted(UUIDUtil.randomUUID());
+		HibSchema container = schemaDao.createPersisted(UUIDUtil.randomUUID(), s -> {
+			s.setName(s.getUuid());
+			s.setCreated(user());
+		});
 		container.generateBucketId();
-		container.setName(container.getUuid());
-		container.setCreated(user());
 		schemaDao.mergeIntoPersisted(container);
 		HibSchemaVersion versionA = createSchemaVersion(Tx.get(), container, v -> {
 			CoreTestUtils.fillSchemaVersion(v, container, schemaName, "1.0", creator.create(oldFieldName));
@@ -360,6 +369,7 @@ public abstract class AbstractFieldMigrationTest extends AbstractMeshTest implem
 		// migrate the node
 		branchDao.assignSchemaVersion(project().getLatestBranch(), user, versionB, batch);
 		CommonTx.get().commit();
+		CommonTx.get().data().maybeGetEventQueueBatch().ifPresent(EventQueueBatch::dispatch);
 
 		NodeMigrationActionContextImpl context = new NodeMigrationActionContextImpl();
 		context.setProject(project());
@@ -404,10 +414,11 @@ public abstract class AbstractFieldMigrationTest extends AbstractMeshTest implem
 		String micronodeFieldName = "micronodefield";
 
 		// create version 1 of the microschema
-		HibMicroschema container = microschemaDao.createPersisted(null);
+		HibMicroschema container = microschemaDao.createPersisted(null, m -> {
+			m.setName(microschemaName);
+			m.setCreated(user());	
+		});
 		container.generateBucketId();
-		container.setName(microschemaName);
-		container.setCreated(user());
 		HibMicroschemaVersion versionA = createMicroschemaVersion(container, microschemaName, "1.0", creator.create(oldFieldName));
 
 		// create version 2 of the microschema (with the field renamed)
@@ -436,6 +447,7 @@ public abstract class AbstractFieldMigrationTest extends AbstractMeshTest implem
 		// migrate the micronode
 		HibJob job = branchDao.assignMicroschemaVersion(project().getLatestBranch(), user(), versionB, createBatch());
 		CommonTx.get().commit();
+		CommonTx.get().data().maybeGetEventQueueBatch().ifPresent(EventQueueBatch::dispatch);
 		if (job != null) {
 			triggerAndWaitForJob(job.getUuid());
 		} else {
@@ -463,7 +475,7 @@ public abstract class AbstractFieldMigrationTest extends AbstractMeshTest implem
 
 	/**
 	 * Generic method to test node migration where the type of a field is changed
-	 * 
+	 *
 	 * @param oldField
 	 *            creator for the old field
 	 * @param dataProvider
@@ -479,18 +491,16 @@ public abstract class AbstractFieldMigrationTest extends AbstractMeshTest implem
 	 */
 	protected void changeType(FieldSchemaCreator oldField, DataProvider dataProvider, FieldFetcher oldFieldFetcher, FieldSchemaCreator newField,
 		DataAsserter asserter) throws InterruptedException, ExecutionException, TimeoutException {
-		try (Tx tx = tx()) {
-			if (getClass().isAnnotationPresent(MicroschemaTest.class)) {
-				changeMicroschemaType(tx, oldField, dataProvider, oldFieldFetcher, newField, asserter);
-			} else {
-				changeSchemaType(tx, oldField, dataProvider, oldFieldFetcher, newField, asserter);
-			}
+		if (getClass().isAnnotationPresent(MicroschemaTest.class)) {
+			changeMicroschemaType(oldField, dataProvider, oldFieldFetcher, newField, asserter);
+		} else {
+			changeSchemaType(oldField, dataProvider, oldFieldFetcher, newField, asserter);
 		}
 	}
 
 	/**
 	 * Generic method to test node migration where the type of a field is changed
-	 * 
+	 *
 	 * @param oldField
 	 *            creator for the old field
 	 * @param dataProvider
@@ -504,95 +514,135 @@ public abstract class AbstractFieldMigrationTest extends AbstractMeshTest implem
 	 * @throws ExecutionException
 	 * @throws InterruptedException
 	 */
-	private void changeSchemaType(Tx tx, FieldSchemaCreator oldField, DataProvider dataProvider, FieldFetcher oldFieldFetcher, FieldSchemaCreator newField,
+	private void changeSchemaType(FieldSchemaCreator oldField, DataProvider dataProvider, FieldFetcher oldFieldFetcher, FieldSchemaCreator newField,
 			DataAsserter asserter) throws InterruptedException, ExecutionException, TimeoutException {
-		NodeDao nodeDao = tx.nodeDao();
-		PersistingBranchDao branchDao = (PersistingBranchDao) tx.branchDao();
-		PersistingSchemaDao schemaDao = (PersistingSchemaDao) tx.schemaDao();
-
 		String fieldName = "changedfield";
 		String schemaName = "schema_" + System.currentTimeMillis();
 
-		// create version 1 of the schema
-		FieldSchema oldFieldSchema = oldField.create(fieldName);
-		HibSchema container = schemaDao.createPersisted(UUIDUtil.randomUUID());
-		container.generateBucketId();
-		container.setName(schemaName);
-		container.setCreated(user());
-		HibSchemaVersion versionA = createSchemaVersion(tx, container, v -> {
-			CoreTestUtils.fillSchemaVersion(v, container, schemaName, "1.0", oldFieldSchema);
-			container.setLatestVersion(v);
+		AtomicReference<String> nodeUuid = new AtomicReference<>();
+		AtomicReference<String> schemaUuid = new AtomicReference<>();
+		AtomicReference<String> versionAUuid = new AtomicReference<>();
+		AtomicReference<String> versionBUuid = new AtomicReference<>();
+		AtomicReference<FieldSchema> oldFieldSchema = new AtomicReference<>();
+		AtomicReference<FieldSchema> newFieldSchema = new AtomicReference<>();
+
+		tx(tx -> {
+			NodeDao nodeDao = tx.nodeDao();
+			PersistingBranchDao branchDao = (PersistingBranchDao) tx.branchDao();
+			PersistingSchemaDao schemaDao = (PersistingSchemaDao) tx.schemaDao();
+
+
+			// create version 1 of the schema
+			oldFieldSchema.set(oldField.create(fieldName));
+			HibSchema container = schemaDao.createPersisted(UUIDUtil.randomUUID(), s -> {
+				s.setName(schemaName);
+				s.setCreated(user());
+			});
+			container.generateBucketId();
+			HibSchemaVersion versionA = createSchemaVersion(tx, container, v -> {
+				CoreTestUtils.fillSchemaVersion(v, container, schemaName, "1.0", oldFieldSchema.get());
+				container.setLatestVersion(v);
+			});
+			versionAUuid.set(versionA.getUuid());
+			schemaDao.mergeIntoPersisted(container);
+			schemaUuid.set(container.getUuid());
+
+			// create version 2 of the schema (with the field modified)
+			newFieldSchema.set(newField.create(fieldName));
+			HibSchemaVersion versionB = CoreTestUtils.createSchemaVersion(container, schemaName, "2.0", newFieldSchema.get());
+			versionBUuid.set(versionB.getUuid());
+
+			// link the schemas with the change in between
+			HibFieldTypeChange change = (HibFieldTypeChange) schemaDao.createPersistedChange(versionA, SchemaChangeOperation.CHANGEFIELDTYPE);
+			change.setFieldName(fieldName);
+			change.setType(newFieldSchema.get().getType());
+			if (newFieldSchema.get() instanceof ListFieldSchema) {
+				change.setListType(((ListFieldSchema) newFieldSchema.get()).getListType());
+			}
+			change.setPreviousContainerVersion(versionA);
+			change.setNextSchemaContainerVersion(versionB);
+			versionA.setNextVersion(versionB);
+			versionA.setNextChange(change);
+
+			// create a node based on the old schema
+			EventQueueBatch batch = createBatch();
+			branchDao.assignSchemaVersion(project().getLatestBranch(), user(), versionA, batch);
+			HibUser user = user();
+			String english = english();
+			HibNode parentNode = folder("2015");
+			HibNode node = nodeDao.create(parentNode, user, versionA, project());
+			nodeUuid.set(node.getUuid());
 		});
-		schemaDao.mergeIntoPersisted(container);
 
-		// create version 2 of the schema (with the field modified)
-		FieldSchema newFieldSchema = newField.create(fieldName);
-		HibSchemaVersion versionB = CoreTestUtils.createSchemaVersion(container, schemaName, "2.0", newFieldSchema);
+		AtomicReference<HibNodeFieldContainer> englishContainer = new AtomicReference<>();
+		tx(tx -> {
+			HibUser user = user();
+			String english = english();
+			HibNode node = tx.nodeDao().findByUuidGlobal(nodeUuid.get());
 
-		// link the schemas with the change in between
-		HibFieldTypeChange change = (HibFieldTypeChange) schemaDao.createPersistedChange(versionA, SchemaChangeOperation.CHANGEFIELDTYPE);
-		change.setFieldName(fieldName);
-		change.setType(newFieldSchema.getType());
-		if (newFieldSchema instanceof ListFieldSchema) {
-			change.setListType(((ListFieldSchema) newFieldSchema).getListType());
-		}
-		change.setPreviousContainerVersion(versionA);
-		change.setNextSchemaContainerVersion(versionB);
-		versionA.setNextVersion(versionB);
-		versionA.setNextChange(change);
+			HibSchema schema = tx.schemaDao().findByUuid(schemaUuid.get());
+			HibSchemaVersion versionA = tx.schemaDao().findVersionByUuid(schema, versionAUuid.get());
+			HibSchemaVersion versionB = tx.schemaDao().findVersionByUuid(schema, versionBUuid.get());
 
-		// create a node based on the old schema
-		EventQueueBatch batch = createBatch();
-		branchDao.assignSchemaVersion(project().getLatestBranch(), user(), versionA, batch);
-		HibUser user = user();
-		String english = english();
-		HibNode parentNode = folder("2015");
-		HibNode node = nodeDao.create(parentNode, user, versionA, project());
-		tx.commit();
-		HibNodeFieldContainer englishContainer = tx.contentDao().createFieldContainer(node, english, node.getProject().getLatestBranch(),
-			user);
-		dataProvider.set(englishContainer, fieldName);
-		assertThat(englishContainer).isOf(versionA).hasVersion("0.1");
+			englishContainer.set(tx.contentDao().createFieldContainer(node, english, node.getProject().getLatestBranch(),
+					user));
+			dataProvider.set(englishContainer.get(), fieldName);
+			assertThat(englishContainer.get()).isOf(versionA).hasVersion("0.1");
 
-		if (dataProvider == FieldTestHelper.NOOP) {
-			assertThat(oldFieldFetcher.fetch(englishContainer, fieldName)).as(OLDFIELD).isNull();
-		} else {
-			assertThat(oldFieldFetcher.fetch(englishContainer, fieldName)).as(OLDFIELD).isNotNull();
-		}
+			if (dataProvider == FieldTestHelper.NOOP) {
+				assertThat(oldFieldFetcher.fetch(englishContainer.get(), fieldName)).as(OLDFIELD).isNull();
+			} else {
+				assertThat(oldFieldFetcher.fetch(englishContainer.get(), fieldName)).as(OLDFIELD).isNotNull();
+			}
 
-		// migrate the node
-		branchDao.assignSchemaVersion(project().getLatestBranch(), user(), versionB, batch);
-		tx.commit();
+			// migrate the node
+			EventQueueBatch batch = createBatch();
+			tx.branchDao().assignSchemaVersion(project().getLatestBranch(), user(), versionB, batch);
+		});
 
 		NodeMigrationActionContextImpl context = new NodeMigrationActionContextImpl();
-		context.setProject(project());
-		context.setBranch(project().getLatestBranch());
-		context.setFromVersion(versionA);
-		context.setToVersion(versionB);
+		context.setHttpServerConfig(tx(tx -> { return tx.data().options().getHttpServerOptions();}));
+		context.setProject(tx(() -> project()));
+		context.setBranch(tx(() -> project().getLatestBranch()));
+		context.setFromVersion(tx(tx -> {
+			SchemaDao schemaDao = tx.schemaDao();
+			return schemaDao.findVersionByUuid(schemaDao.findByUuid(schemaUuid.get()), versionAUuid.get());
+		}));
+		context.setToVersion(tx(tx -> {
+			SchemaDao schemaDao = tx.schemaDao();
+			return schemaDao.findVersionByUuid(schemaDao.findByUuid(schemaUuid.get()), versionBUuid.get());
+		}));
 		context.setStatus(DummyMigrationStatus.get());
 
 		nodeMigrationHandler.migrateNodes(context).blockingAwait();
-		// old container must not be changed
-		assertThat(englishContainer).isOf(versionA).hasVersion("0.1");
-		// assert that migration worked
-		HibNodeFieldContainer migratedContainer = tx.contentDao().getFieldContainer(node, "en");
-		assertThat(migratedContainer).isOf(versionB).hasVersion("0.2");
-		assertThat(node).as("Migrated Node").isOf(container).hasTranslation("en");
 
-		if (!StringUtils.equals(oldFieldSchema.getType(), newFieldSchema.getType())) {
-			assertThat(oldFieldFetcher.fetch(migratedContainer, fieldName)).as(OLDFIELD).isNull();
-		}
-		if ((oldFieldSchema instanceof ListFieldSchema) && (newFieldSchema instanceof ListFieldSchema) && !StringUtils.equals(
-			((ListFieldSchema) oldFieldSchema).getListType(), ((ListFieldSchema) newFieldSchema).getListType())) {
-			assertThat(oldFieldFetcher.fetch(migratedContainer, fieldName)).as(OLDFIELD).isNull();
-		}
-		tx.commit();
-		asserter.assertThat(migratedContainer, fieldName);
+		tx(tx -> {
+			HibNode node = tx.nodeDao().findByUuidGlobal(nodeUuid.get());
+			HibSchema schema = tx.schemaDao().findByUuid(schemaUuid.get());
+			HibSchemaVersion versionA = tx.schemaDao().findVersionByUuid(schema, versionAUuid.get());
+			HibSchemaVersion versionB = tx.schemaDao().findVersionByUuid(schema, versionBUuid.get());
+
+			// old container must not be changed
+			assertThat(englishContainer.get()).isOf(versionA).hasVersion("0.1");
+			// assert that migration worked
+			HibNodeFieldContainer migratedContainer = tx.contentDao().getFieldContainer(node, "en");
+			assertThat(migratedContainer).isOf(versionB).hasVersion("0.2");
+			assertThat(node).as("Migrated Node").isOf(schema).hasTranslation("en");
+
+			if (!StringUtils.equals(oldFieldSchema.get().getType(), newFieldSchema.get().getType())) {
+				assertThat(oldFieldFetcher.fetch(migratedContainer, fieldName)).as(OLDFIELD).isNull();
+			}
+			if ((oldFieldSchema.get() instanceof ListFieldSchema) && (newFieldSchema.get() instanceof ListFieldSchema) && !StringUtils.equals(
+					((ListFieldSchema) oldFieldSchema.get()).getListType(), ((ListFieldSchema) newFieldSchema.get()).getListType())) {
+				assertThat(oldFieldFetcher.fetch(migratedContainer, fieldName)).as(OLDFIELD).isNull();
+			}
+			asserter.assertThat(migratedContainer, fieldName);
+		});
 	}
 
 	/**
 	 * Generic method to test micronode migration where the type of a field is changed
-	 * 
+	 *
 	 * @param oldField
 	 *            creator for the old field
 	 * @param dataProvider
@@ -606,86 +656,119 @@ public abstract class AbstractFieldMigrationTest extends AbstractMeshTest implem
 	 * @throws ExecutionException
 	 * @throws InterruptedException
 	 */
-	private void changeMicroschemaType(Tx tx, FieldSchemaCreator oldField, DataProvider dataProvider, FieldFetcher oldFieldFetcher,
+	private void changeMicroschemaType(FieldSchemaCreator oldField, DataProvider dataProvider, FieldFetcher oldFieldFetcher,
 			FieldSchemaCreator newField, DataAsserter asserter) throws InterruptedException, ExecutionException, TimeoutException {
-		NodeDao nodeDao = tx.nodeDao();
-		PersistingMicroschemaDao microschemaDao = (PersistingMicroschemaDao) tx.microschemaDao();
-		
 		String fieldName = "changedfield";
 		String microschemaName = UUIDUtil.randomUUID();
 		String micronodeFieldName = "micronodefield";
 
-		// create version 1 of the microschema
-		FieldSchema oldFieldSchema = oldField.create(fieldName);
-		HibMicroschema container = microschemaDao.createPersisted(null);
-		container.setName(microschemaName);
-		container.setCreated(user());
-		HibMicroschemaVersion versionA = createMicroschemaVersion(container, microschemaName, "1.0", oldFieldSchema);
+		AtomicReference<String> nodeUuid = new AtomicReference<>();
+		AtomicReference<String> microschemaUuid = new AtomicReference<>();
+		AtomicReference<String> versionAUuid = new AtomicReference<>();
+		AtomicReference<String> versionBUuid = new AtomicReference<>();
+		AtomicReference<FieldSchema> oldFieldSchema = new AtomicReference<>();
+		AtomicReference<FieldSchema> newFieldSchema = new AtomicReference<>();
 
-		// create version 2 of the microschema (with the field modified)
-		FieldSchema newFieldSchema = newField.create(fieldName);
-		HibMicroschemaVersion versionB = createMicroschemaVersion(container, microschemaName, "2.0", newFieldSchema);
+		tx(tx -> {
+			NodeDao nodeDao = tx.nodeDao();
+			PersistingMicroschemaDao microschemaDao = (PersistingMicroschemaDao) tx.microschemaDao();
 
-		// link the schemas with the change in between
-		HibFieldTypeChange change = (HibFieldTypeChange) microschemaDao.createPersistedChange(versionA, SchemaChangeOperation.CHANGEFIELDTYPE);
-		change.setFieldName(fieldName);
-		change.setType(newFieldSchema.getType());
-		if (newFieldSchema instanceof ListFieldSchema) {
-			change.setListType(((ListFieldSchema) newFieldSchema).getListType());
-		}
-		change.setPreviousContainerVersion(versionA);
-		change.setNextSchemaContainerVersion(versionB);
-		versionA.setNextVersion(versionB);
-		versionA.setNextChange(change);
+			// create version 1 of the microschema
+			oldFieldSchema.set(oldField.create(fieldName));
+			HibMicroschema container = microschemaDao.createPersisted(null, m -> {
+				m.setName(microschemaName);
+				m.setCreated(user());
+			});
+			microschemaUuid.set(container.getUuid());
+			HibMicroschemaVersion versionA = createMicroschemaVersion(container, microschemaName, "1.0", oldFieldSchema.get());
+			versionAUuid.set(versionA.getUuid());
 
-		microschemaDao.assign(container, project(), user(), createBatch());
-		HibNode node = nodeDao.create(folder("2015"), user(), schemaContainer("content").getLatestVersion(), project());
-		tx.commit();
+			// create version 2 of the microschema (with the field modified)
+			newFieldSchema.set(newField.create(fieldName));
+			HibMicroschemaVersion versionB = createMicroschemaVersion(container, microschemaName, "2.0", newFieldSchema.get());
+			versionBUuid.set(versionB.getUuid());
 
-		// create a node based on the old schema
-		HibMicronodeField micronodeField = createMicronodefield(tx, node, micronodeFieldName, versionA, dataProvider, fieldName);
-		HibNodeFieldContainer oldContainer = tx.contentDao().getFieldContainer(node, "en");
-		VersionNumber oldVersion = oldContainer.getVersion();
+			// link the schemas with the change in between
+			HibFieldTypeChange change = (HibFieldTypeChange) microschemaDao.createPersistedChange(versionA, SchemaChangeOperation.CHANGEFIELDTYPE);
+			change.setFieldName(fieldName);
+			change.setType(newFieldSchema.get().getType());
+			if (newFieldSchema.get() instanceof ListFieldSchema) {
+				change.setListType(((ListFieldSchema) newFieldSchema.get()).getListType());
+			}
+			change.setPreviousContainerVersion(versionA);
+			change.setNextSchemaContainerVersion(versionB);
+			versionA.setNextVersion(versionB);
+			versionA.setNextChange(change);
 
-		if (dataProvider == FieldTestHelper.NOOP) {
-			assertThat(oldFieldFetcher.fetch(micronodeField.getMicronode(), fieldName)).as(OLDFIELD).isNull();
-		} else {
-			assertThat(oldFieldFetcher.fetch(micronodeField.getMicronode(), fieldName)).as(OLDFIELD).isNotNull();
-		}
+			microschemaDao.assign(container, project(), user(), createBatch());
+			HibNode node = nodeDao.create(folder("2015"), user(), schemaContainer("content").getLatestVersion(), project());
+			nodeUuid.set(node.getUuid());
+		});
+
+		AtomicReference<VersionNumber> oldVersion = new AtomicReference<>();
+		AtomicReference<HibNodeFieldContainer> oldContainer = new AtomicReference<>();
+		tx(tx -> {
+			HibNode node = tx.nodeDao().findByUuidGlobal(nodeUuid.get());
+			HibMicroschema microschema = tx.microschemaDao().findByUuid(microschemaUuid.get());
+			HibMicroschemaVersion versionA = tx.microschemaDao().findVersionByUuid(microschema, versionAUuid.get());
+
+			// create a node based on the old schema
+			HibMicronodeField micronodeField = createMicronodefield(tx, node, micronodeFieldName, versionA, dataProvider, fieldName);
+			oldContainer.set(tx.contentDao().getFieldContainer(node, "en"));
+			oldVersion.set(oldContainer.get().getVersion());
+
+			if (dataProvider == FieldTestHelper.NOOP) {
+				assertThat(oldFieldFetcher.fetch(micronodeField.getMicronode(), fieldName)).as(OLDFIELD).isNull();
+			} else {
+				assertThat(oldFieldFetcher.fetch(micronodeField.getMicronode(), fieldName)).as(OLDFIELD).isNotNull();
+			}
+		});
 
 		// migrate the micronode
 		MicronodeMigrationContextImpl context = new MicronodeMigrationContextImpl();
-		context.setBranch(project().getLatestBranch());
-		context.setFromVersion(versionA);
-		context.setToVersion(versionB);
+		context.setBranch(tx(() -> project().getLatestBranch()));
+		context.setFromVersion(tx(tx -> {
+			MicroschemaDao microschemaDao = tx.microschemaDao();
+			return microschemaDao.findVersionByUuid(microschemaDao.findByUuid(microschemaUuid.get()), versionAUuid.get());
+		}));
+		context.setToVersion(tx(tx -> {
+			MicroschemaDao microschemaDao = tx.microschemaDao();
+			return microschemaDao.findVersionByUuid(microschemaDao.findByUuid(microschemaUuid.get()), versionBUuid.get());
+		}));
 		context.setStatus(DummyMigrationStatus.get());
 		micronodeMigrationHandler.migrateMicronodes(context).blockingAwait(10, TimeUnit.SECONDS);
 
-		// old container must be untouched
-		micronodeField = oldContainer.getMicronode(micronodeFieldName);
-		assertThat(oldContainer).as("Old container").hasVersion(oldVersion.toString());
-		assertThat(micronodeField.getMicronode()).as("Old micronode").isOf(versionA);
+		tx(tx -> {
+			HibNode node = tx.nodeDao().findByUuidGlobal(nodeUuid.get());
+			HibMicroschema microschema = tx.microschemaDao().findByUuid(microschemaUuid.get());
+			HibMicroschemaVersion versionA = tx.microschemaDao().findVersionByUuid(microschema, versionAUuid.get());
+			HibMicroschemaVersion versionB = tx.microschemaDao().findVersionByUuid(microschema, versionBUuid.get());
 
-		// assert that migration worked
-		HibNodeFieldContainer newContainer = tx.contentDao().getFieldContainer(node, "en");
-		assertThat(newContainer).as("New container").hasVersion(oldVersion.nextDraft().toString());
-		HibMicronodeField newMicronodeField = newContainer.getMicronode(micronodeFieldName);
-		assertThat(newMicronodeField.getMicronode()).as("Migrated Micronode").isOf(versionB);
+			// old container must be untouched
+			HibMicronodeField micronodeField = oldContainer.get().getMicronode(micronodeFieldName);
+			assertThat(oldContainer.get()).as("Old container").hasVersion(oldVersion.get().toString());
+			assertThat(micronodeField.getMicronode()).as("Old micronode").isOf(versionA);
 
-		if (!StringUtils.equals(oldFieldSchema.getType(), newFieldSchema.getType())) {
-			assertThat(oldFieldFetcher.fetch(newMicronodeField.getMicronode(), fieldName)).as(OLDFIELD).isNull();
-		}
-		if ((oldFieldSchema instanceof ListFieldSchema) && (newFieldSchema instanceof ListFieldSchema) && !StringUtils.equals(
-			((ListFieldSchema) oldFieldSchema).getListType(), ((ListFieldSchema) newFieldSchema).getListType())) {
-			assertThat(oldFieldFetcher.fetch(newMicronodeField.getMicronode(), fieldName)).as(OLDFIELD).isNull();
-		}
-		tx.commit();
-		asserter.assertThat(newMicronodeField.getMicronode(), fieldName);
+			// assert that migration worked
+			HibNodeFieldContainer newContainer = tx.contentDao().getFieldContainer(node, "en");
+			assertThat(newContainer).as("New container").hasVersion(oldVersion.get().nextDraft().toString());
+			HibMicronodeField newMicronodeField = newContainer.getMicronode(micronodeFieldName);
+			assertThat(newMicronodeField.getMicronode()).as("Migrated Micronode").isOf(versionB);
+
+			if (!StringUtils.equals(oldFieldSchema.get().getType(), newFieldSchema.get().getType())) {
+				assertThat(oldFieldFetcher.fetch(newMicronodeField.getMicronode(), fieldName)).as(OLDFIELD).isNull();
+			}
+			if ((oldFieldSchema.get() instanceof ListFieldSchema) && (newFieldSchema.get() instanceof ListFieldSchema) && !StringUtils.equals(
+					((ListFieldSchema) oldFieldSchema.get()).getListType(), ((ListFieldSchema) newFieldSchema.get()).getListType())) {
+				assertThat(oldFieldFetcher.fetch(newMicronodeField.getMicronode(), fieldName)).as(OLDFIELD).isNull();
+			}
+			asserter.assertThat(newMicronodeField.getMicronode(), fieldName);
+		});
 	}
 
 	/**
 	 * Generic test for migrating an existing field with a custom migration script
-	 * 
+	 *
 	 * @param creator
 	 *            creator implementation
 	 * @param dataProvider
@@ -713,7 +796,7 @@ public abstract class AbstractFieldMigrationTest extends AbstractMeshTest implem
 
 	/**
 	 * Generic test for migrating an existing field with a custom migration script
-	 * 
+	 *
 	 * @param creator
 	 *            creator implementation
 	 * @param dataProvider
@@ -739,10 +822,11 @@ public abstract class AbstractFieldMigrationTest extends AbstractMeshTest implem
 
 		// create version 1 of the schema
 		FieldSchema oldField = creator.create(fieldName);
-		HibSchema container = schemaDao.createPersisted(UUIDUtil.randomUUID());
+		HibSchema container = schemaDao.createPersisted(UUIDUtil.randomUUID(), s -> {
+			s.setName(UUIDUtil.randomUUID());
+			s.setCreated(user());
+		});
 		container.generateBucketId();
-		container.setName(UUIDUtil.randomUUID());
-		container.setCreated(user());
 		schemaDao.mergeIntoPersisted(container);
 		HibSchemaVersion versionA = createSchemaVersion(Tx.get(), container, v -> {
 			CoreTestUtils.fillSchemaVersion(v, container, schemaName, "1.0", oldField);
@@ -775,6 +859,7 @@ public abstract class AbstractFieldMigrationTest extends AbstractMeshTest implem
 		// migrate the node
 		branchDao.assignSchemaVersion(project().getLatestBranch(), user(), versionB, batch);
 		CommonTx.get().commit();
+		CommonTx.get().data().maybeGetEventQueueBatch().ifPresent(EventQueueBatch::dispatch);
 		NodeMigrationActionContextImpl context = new NodeMigrationActionContextImpl();
 		context.setProject(project());
 		context.setBranch(project().getLatestBranch());
@@ -792,7 +877,7 @@ public abstract class AbstractFieldMigrationTest extends AbstractMeshTest implem
 
 	/**
 	 * Generic test for migrating an existing field with a custom migration script
-	 * 
+	 *
 	 * @param creator
 	 *            creator implementation
 	 * @param dataProvider
@@ -819,10 +904,12 @@ public abstract class AbstractFieldMigrationTest extends AbstractMeshTest implem
 
 		// create version 1 of the microschema
 		FieldSchema oldField = creator.create(fieldName);
-		HibMicroschema container = microschemaDao.createPersisted(null);
+		HibMicroschema container = microschemaDao.createPersisted(null, m -> {
+			m.setName(UUIDUtil.randomUUID());
+			m.setCreated(user());
+		});
 		container.generateBucketId();
-		container.setName(microschemaName);
-		container.setCreated(user());
+
 		HibMicroschemaVersion versionA = createMicroschemaVersion(container, microschemaName, "1.0", oldField);
 
 		// create version 2 of the schema (with the field renamed)
@@ -847,6 +934,8 @@ public abstract class AbstractFieldMigrationTest extends AbstractMeshTest implem
 		// migrate the micronode
 		branchDao.assignMicroschemaVersion(project().getLatestBranch(), user(), versionB, createBatch());
 		CommonTx.get().commit();
+		CommonTx.get().data().maybeGetEventQueueBatch().ifPresent(EventQueueBatch::dispatch);
+		
 		MicronodeMigrationContextImpl context = new MicronodeMigrationContextImpl();
 		context.setBranch(project().getLatestBranch());
 		context.setFromVersion(versionA);
@@ -922,9 +1011,10 @@ public abstract class AbstractFieldMigrationTest extends AbstractMeshTest implem
 
 		// create version 1 of the schema
 		FieldSchema oldField = creator.create(fieldName);
-		HibSchema container = schemaDao.createPersisted(null);
-		container.setName(UUIDUtil.randomUUID());
-		container.setCreated(user());
+		HibSchema container = schemaDao.createPersisted(null, s -> {
+			s.setName(UUIDUtil.randomUUID());
+			s.setCreated(user());
+		});
 
 		schemaDao.mergeIntoPersisted(container);
 		HibSchemaVersion versionA = createSchemaVersion(Tx.get(), container, v -> {
@@ -958,6 +1048,7 @@ public abstract class AbstractFieldMigrationTest extends AbstractMeshTest implem
 		// migrate the node
 		branchDao.assignSchemaVersion(project().getLatestBranch(), user, versionB, batch);
 		CommonTx.get().commit();
+		CommonTx.get().data().maybeGetEventQueueBatch().ifPresent(EventQueueBatch::dispatch);
 		NodeMigrationActionContextImpl context = new NodeMigrationActionContextImpl();
 		context.setProject(project());
 		context.setBranch(project().getLatestBranch());
@@ -990,9 +1081,11 @@ public abstract class AbstractFieldMigrationTest extends AbstractMeshTest implem
 
 		// create version 1 of the microschema
 		FieldSchema oldField = creator.create(fieldName);
-		HibMicroschema container = microschemaDao.createPersisted(null);
-		container.setName(microschemaName);
-		container.setCreated(user());
+		HibMicroschema container = microschemaDao.createPersisted(null, m -> {
+			m.setName(microschemaName);
+			m.setCreated(user());
+		});
+
 		HibMicroschemaVersion versionA = createMicroschemaVersion(container, microschemaName, "1.0", oldField);
 
 		// create version 2 of the microschema
@@ -1013,6 +1106,7 @@ public abstract class AbstractFieldMigrationTest extends AbstractMeshTest implem
 		// migrate the node
 		branchDao.assignMicroschemaVersion(project().getLatestBranch(), user(), versionB, createBatch());
 		CommonTx.get().commit();
+		CommonTx.get().data().maybeGetEventQueueBatch().ifPresent(EventQueueBatch::dispatch);
 		MicronodeMigrationContextImpl context = new MicronodeMigrationContextImpl();
 		context.setBranch(project().getLatestBranch());
 		context.setFromVersion(versionA);
@@ -1024,7 +1118,7 @@ public abstract class AbstractFieldMigrationTest extends AbstractMeshTest implem
 
 	/**
 	 * Create a microschema
-	 * 
+	 *
 	 * @param name
 	 *            name
 	 * @param version
@@ -1053,7 +1147,7 @@ public abstract class AbstractFieldMigrationTest extends AbstractMeshTest implem
 
 	/**
 	 * Create a micronode field in an existing node
-	 * 
+	 *
 	 * @param micronodeFieldName
 	 *            name of the micronode field
 	 * @param schemaVersion

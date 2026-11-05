@@ -7,18 +7,23 @@
 | Description
 
 
+| apikey
+| no
+| string
+| API key of the user to log in.
+
 | newPassword
-| false
+| no
 | string
 | New password that will be set after successful login.
 
 | password
-| true
+| no
 | string
 | Password of the user which should be logged in.
 
 | username
-| true
+| no
 | string
 | Username of the user which should be logged in.
 

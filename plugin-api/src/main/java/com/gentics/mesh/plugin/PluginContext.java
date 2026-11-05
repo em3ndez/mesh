@@ -2,9 +2,9 @@ package com.gentics.mesh.plugin;
 
 import static io.vertx.core.http.HttpHeaders.AUTHORIZATION;
 
+import java.nio.charset.Charset;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.regex.Pattern;
 
 import com.gentics.mesh.core.rest.common.RestModel;
@@ -17,21 +17,19 @@ import io.vertx.core.AsyncResult;
 import io.vertx.core.Handler;
 import io.vertx.core.MultiMap;
 import io.vertx.core.Vertx;
-import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpHeaders;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.http.HttpServerResponse;
-import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
 import io.vertx.ext.auth.User;
-import io.vertx.ext.web.Cookie;
 import io.vertx.ext.web.FileUpload;
-import io.vertx.ext.web.Locale;
 import io.vertx.ext.web.ParsedHeaderValues;
+import io.vertx.ext.web.RequestBody;
 import io.vertx.ext.web.Route;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.Session;
+import io.vertx.ext.web.UserContext;
 
 /**
  * Wrapper for the regular Vert.x routing context.
@@ -139,7 +137,7 @@ public class PluginContext implements RoutingContext {
 	 *            Status of the response
 	 */
 	public void send(RestModel restModel, int status) {
-		send(restModel.toJson(), status, HttpConstants.APPLICATION_JSON);
+		send(restModel.toJson(env.options().getHttpServerOptions().isMinifyJson()), status, HttpConstants.APPLICATION_JSON);
 	}
 
 	/**
@@ -179,6 +177,11 @@ public class PluginContext implements RoutingContext {
 	}
 
 	@Override
+	public <T> T get(String s, T t) {
+		return rc.get(s, t);
+	}
+
+	@Override
 	public <T> T remove(String key) {
 		return rc.remove(key);
 	}
@@ -204,63 +207,23 @@ public class PluginContext implements RoutingContext {
 	}
 
 	@Override
-	public String normalisedPath() {
-		return rc.normalisedPath();
+	public String normalizedPath() {
+		return rc.normalizedPath();
 	}
 
 	@Override
-	public @Nullable Cookie getCookie(String name) {
-		return rc.getCookie(name);
+	public RequestBody body() {
+		return rc.body();
 	}
 
 	@Override
-	public RoutingContext addCookie(Cookie cookie) {
-		return rc.addCookie(cookie);
-	}
-
-	@Override
-	public @Nullable Cookie removeCookie(String name, boolean invalidate) {
-		return rc.removeCookie(name, invalidate);
-	}
-
-	@Override
-	public int cookieCount() {
-		return rc.cookieCount();
-	}
-
-	@Override
-	public Set<Cookie> cookies() {
-		return rc.cookies();
-	}
-
-	@Override
-	public @Nullable String getBodyAsString() {
-		return rc.getBodyAsString();
-	}
-
-	@Override
-	public @Nullable String getBodyAsString(String encoding) {
-		return rc.getBodyAsString(encoding);
-	}
-
-	@Override
-	public @Nullable JsonObject getBodyAsJson() {
-		return rc.getBodyAsJson();
-	}
-
-	@Override
-	public @Nullable JsonArray getBodyAsJsonArray() {
-		return rc.getBodyAsJsonArray();
-	}
-
-	@Override
-	public @Nullable Buffer getBody() {
-		return rc.getBody();
-	}
-
-	@Override
-	public Set<FileUpload> fileUploads() {
+	public List<FileUpload> fileUploads() {
 		return rc.fileUploads();
+	}
+
+	@Override
+	public void cancelAndCleanupFileUploads() {
+		rc.cancelAndCleanupFileUploads();
 	}
 
 	@Override
@@ -319,26 +282,6 @@ public class PluginContext implements RoutingContext {
 	}
 
 	@Override
-	public void setBody(Buffer body) {
-		rc.setBody(body);
-	}
-
-	@Override
-	public void setSession(Session session) {
-		rc.setSession(session);
-	}
-
-	@Override
-	public void setUser(User user) {
-		rc.setUser(user);
-	}
-
-	@Override
-	public void clearUser() {
-		rc.clearUser();
-	}
-
-	@Override
 	public void setAcceptableContentType(@Nullable String contentType) {
 		rc.setAcceptableContentType(contentType);
 	}
@@ -346,11 +289,6 @@ public class PluginContext implements RoutingContext {
 	@Override
 	public void reroute(HttpMethod method, String path) {
 		rc.reroute(method, path);
-	}
-
-	@Override
-	public List<Locale> acceptableLocales() {
-		return rc.acceptableLocales();
 	}
 
 	@Override
@@ -369,6 +307,11 @@ public class PluginContext implements RoutingContext {
 	}
 
 	@Override
+	public MultiMap queryParams(Charset charset) {
+		return rc.queryParams(charset);
+	}
+
+	@Override
 	public @Nullable List<String> queryParam(String query) {
 		return rc.queryParam(query);
 	}
@@ -376,16 +319,6 @@ public class PluginContext implements RoutingContext {
 	@Override
 	public void fail(int statusCode, Throwable throwable) {
 		rc.fail(statusCode, throwable);
-	}
-
-	@Override
-	public RoutingContext addCookie(io.vertx.core.http.Cookie cookie) {
-		return rc.addCookie(cookie);
-	}
-
-	@Override
-	public Map<String, io.vertx.core.http.Cookie> cookieMap() {
-		return rc.cookieMap();
 	}
 
 	@Override
@@ -401,5 +334,10 @@ public class PluginContext implements RoutingContext {
 	@Override
 	public boolean isSessionAccessed() {
 		return rc.isSessionAccessed();
+	}
+
+	@Override
+	public UserContext userContext() {
+		return rc.userContext();
 	}
 }

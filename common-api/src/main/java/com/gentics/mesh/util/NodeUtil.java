@@ -9,10 +9,12 @@ import java.util.Set;
  */
 public class NodeUtil {
 	private static final Set<String> processableImageTypes = ImmutableSet.of(
-		"image/gif", "image/png", "image/jpeg", "image/bmp",
+		"image/gif", "image/png", "image/jpeg", "image/bmp", "image/webp",
 		// Not an actual mime type, but with this,
 		// Mesh will behave as intended by the user even if he made a mistake.
-		"image/jpg"
+		"image/jpg",
+		// Old MIME for the (back then) new progressive format
+		"image/pjpeg"
 	);
 
 	/**

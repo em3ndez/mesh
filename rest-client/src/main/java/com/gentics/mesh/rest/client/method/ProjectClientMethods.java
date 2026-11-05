@@ -1,6 +1,9 @@
 package com.gentics.mesh.rest.client.method;
 
 import com.gentics.mesh.core.rest.common.GenericMessageResponse;
+import com.gentics.mesh.core.rest.common.ObjectPermissionGrantRequest;
+import com.gentics.mesh.core.rest.common.ObjectPermissionResponse;
+import com.gentics.mesh.core.rest.common.ObjectPermissionRevokeRequest;
 import com.gentics.mesh.core.rest.project.ProjectCreateRequest;
 import com.gentics.mesh.core.rest.project.ProjectListResponse;
 import com.gentics.mesh.core.rest.project.ProjectResponse;
@@ -48,7 +51,7 @@ public interface ProjectClientMethods {
 	 * @param languageUuid
 	 * @return
 	 */
-	MeshRequest<ProjectResponse> assignLanguageToProject(String projectUuid, String languageUuid);
+	MeshRequest<ProjectResponse> assignLanguageToProject(String projectUuid, String languageUuid, ParameterProvider... parameters);
 
 	/**
 	 * Unassign the given language from the project.
@@ -57,7 +60,7 @@ public interface ProjectClientMethods {
 	 * @param languageUuid
 	 * @return
 	 */
-	MeshRequest<ProjectResponse> unassignLanguageFromProject(String projectUuid, String languageUuid);
+	MeshRequest<ProjectResponse> unassignLanguageFromProject(String projectUuid, String languageUuid, ParameterProvider... parameters);
 
 	/**
 	 * Create a new project.
@@ -85,7 +88,7 @@ public interface ProjectClientMethods {
 	 * @param request
 	 * @return
 	 */
-	MeshRequest<ProjectResponse> updateProject(String uuid, ProjectUpdateRequest request);
+	MeshRequest<ProjectResponse> updateProject(String uuid, ProjectUpdateRequest request, ParameterProvider... parameters);
 
 	/**
 	 * Delete the project.
@@ -103,4 +106,28 @@ public interface ProjectClientMethods {
 	 * @return
 	 */
 	MeshRequest<GenericMessageResponse> purgeProject(String uuid, ParameterProvider... parameters);
+
+	/**
+	 * Get the role permissions on the project
+	 * 
+	 * @param uuid Uuid of the project
+	 * @return request
+	 */
+	MeshRequest<ObjectPermissionResponse> getProjectRolePermissions(String uuid);
+
+	/**
+	 * Grant permissions on the project to roles
+	 * @param uuid Uuid of the project
+	 * @param request request
+	 * @return mesh request
+	 */
+	MeshRequest<ObjectPermissionResponse> grantProjectRolePermissions(String uuid, ObjectPermissionGrantRequest request);
+
+	/**
+	 * Revoke permissions on the project from roles
+	 * @param uuid Uuid of the project
+	 * @param request request
+	 * @return mesh request
+	 */
+	MeshRequest<ObjectPermissionResponse> revokeProjectRolePermissions(String uuid, ObjectPermissionRevokeRequest request);
 }

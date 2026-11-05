@@ -11,6 +11,15 @@ public enum JobType {
 
 	branch,
 
-	versionpurge
+	versionpurge,
 
+	schemaversionpurge,
+
+	microschemaversionpurge,
+
+	consistencycheck,
+
+	consistencyrepair,
+
+	imagecache
 }

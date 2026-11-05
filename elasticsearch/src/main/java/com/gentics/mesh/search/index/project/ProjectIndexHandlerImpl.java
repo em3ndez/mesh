@@ -1,6 +1,11 @@
 package com.gentics.mesh.search.index.project;
 
+import static com.gentics.mesh.util.PreparationUtil.prepareData;
+
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -12,13 +17,21 @@ import java.util.stream.Stream;
 import javax.inject.Inject;
 import javax.inject.Singleton;
 
+import org.apache.commons.lang3.tuple.Pair;
+
 import com.gentics.mesh.context.InternalActionContext;
+import com.gentics.mesh.core.data.Bucket;
+import com.gentics.mesh.core.data.dao.ProjectDao;
+import com.gentics.mesh.core.data.dao.RoleDao;
+import com.gentics.mesh.core.data.perm.InternalPermission;
 import com.gentics.mesh.core.data.project.HibProject;
+import com.gentics.mesh.core.data.search.Compliance;
 import com.gentics.mesh.core.data.search.index.IndexInfo;
 import com.gentics.mesh.core.data.search.request.SearchRequest;
 import com.gentics.mesh.core.db.Database;
 import com.gentics.mesh.core.db.Tx;
 import com.gentics.mesh.etc.config.MeshOptions;
+import com.gentics.mesh.handler.DataHolderContext;
 import com.gentics.mesh.search.SearchProvider;
 import com.gentics.mesh.search.index.BucketManager;
 import com.gentics.mesh.search.index.entry.AbstractIndexHandler;
@@ -33,16 +46,16 @@ import io.reactivex.Flowable;
 @Singleton
 public class ProjectIndexHandlerImpl extends AbstractIndexHandler<HibProject> implements ProjectIndexHandler {
 
-	@Inject
-	ProjectTransformer transformer;
+	protected final ProjectTransformer transformer;
+
+	protected final ProjectMappingProvider mappingProvider;
 
 	@Inject
-	ProjectMappingProvider mappingProvider;
-
-	@Inject
-	public ProjectIndexHandlerImpl(SearchProvider searchProvider, Database db, MeshHelper helper, MeshOptions options,
-		SyncMetersFactory syncMetricsFactory, BucketManager bucketManager) {
-		super(searchProvider, db, helper, options, syncMetricsFactory, bucketManager);
+	public ProjectIndexHandlerImpl(SearchProvider searchProvider, Database db, MeshHelper helper, MeshOptions options, Compliance compliance,
+		SyncMetersFactory syncMetricsFactory, BucketManager bucketManager, ProjectTransformer transformer, ProjectMappingProvider mappingProvider) {
+		super(searchProvider, db, helper, options, syncMetricsFactory, bucketManager, compliance);
+		this.transformer = transformer;
+		this.mappingProvider = mappingProvider;
 	}
 
 	@Override
@@ -96,15 +109,27 @@ public class ProjectIndexHandlerImpl extends AbstractIndexHandler<HibProject> im
 	}
 
 	@Override
-	public Stream<? extends HibProject> loadAllElements() {
-		return Tx.get().projectDao().findAll().stream();
+	public Function<Collection<String>, Stream<Pair<String, HibProject>>> elementsLoader() {
+		return (uuids) -> Tx.get().projectDao().findByUuids(uuids);
 	}
 
 	@Override
-	public Map<String, IndexInfo> getIndices() {
+	public Collection<? extends HibProject> loadAllElements(Bucket bucket, DataHolderContext dhc) {
+		ProjectDao projectDao = Tx.get().projectDao();
+		RoleDao roleDao = Tx.get().roleDao();
+
+		List<HibProject> projectsInBucket = new ArrayList<>(projectDao.findAll(bucket).list());
+		prepareData(projectsInBucket, dhc, "project", "permissions",
+				elements -> roleDao.getRoleUuidsForPerm(elements, InternalPermission.READ_PERM));
+
+		return projectsInBucket;
+	}
+
+	@Override
+	public Map<String, Optional<IndexInfo>> getIndices() {
 		String indexName = HibProject.composeIndexName();
 		IndexInfo info = new IndexInfo(indexName, null, getMappingProvider().getMapping(), "project");
-		return Collections.singletonMap(indexName, info);
+		return Collections.singletonMap(indexName, Optional.of(info));
 	}
 
 }

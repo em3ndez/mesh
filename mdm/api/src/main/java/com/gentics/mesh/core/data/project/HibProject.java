@@ -14,7 +14,7 @@ import com.gentics.mesh.core.data.HibBaseElement;
 import com.gentics.mesh.core.data.HibBucketableElement;
 import com.gentics.mesh.core.data.HibCoreElement;
 import com.gentics.mesh.core.data.HibLanguage;
-import com.gentics.mesh.core.data.HibNamedElement;
+import com.gentics.mesh.core.data.HibNamedBaseElement;
 import com.gentics.mesh.core.data.HibReferenceableElement;
 import com.gentics.mesh.core.data.branch.HibBranch;
 import com.gentics.mesh.core.data.dao.ProjectDao;
@@ -24,6 +24,7 @@ import com.gentics.mesh.core.data.role.HibRole;
 import com.gentics.mesh.core.data.schema.HibMicroschema;
 import com.gentics.mesh.core.data.schema.HibSchema;
 import com.gentics.mesh.core.data.user.HibUserTracking;
+import com.gentics.mesh.core.data.user.MeshAuthUser;
 import com.gentics.mesh.core.db.Tx;
 import com.gentics.mesh.core.rest.project.ProjectReference;
 import com.gentics.mesh.core.rest.project.ProjectResponse;
@@ -34,7 +35,7 @@ import com.gentics.mesh.handler.VersionUtils;
 /**
  * Domain model for project.
  */
-public interface HibProject extends HibCoreElement<ProjectResponse>, HibReferenceableElement<ProjectReference>, HibUserTracking, HibBucketableElement, HibNamedElement {
+public interface HibProject extends HibCoreElement<ProjectResponse>, HibReferenceableElement<ProjectReference>, HibUserTracking, HibBucketableElement, HibNamedBaseElement {
 
 	TypeInfo TYPE_INFO = new TypeInfo(ElementType.PROJECT, PROJECT_CREATED, PROJECT_UPDATED, PROJECT_DELETED);
 
@@ -107,6 +108,14 @@ public interface HibProject extends HibCoreElement<ProjectResponse>, HibReferenc
 	Result<? extends HibLanguage> getLanguages();
 
 	/**
+	 * Find an assigned language by its tag.
+	 * @param languageTag 
+	 * 
+	 * @return
+	 */
+	HibLanguage findLanguageByTag(String languageTag);
+
+	/**
 	 * Unassign the language from the project.
 	 *
 	 * @param language
@@ -145,15 +154,15 @@ public interface HibProject extends HibCoreElement<ProjectResponse>, HibReferenc
 	}
 
 	@Override
-	default boolean applyPermissions(EventQueueBatch batch, HibRole role, boolean recursive, Set<InternalPermission> permissionsToGrant, Set<InternalPermission> permissionsToRevoke) {
+	default boolean applyPermissions(MeshAuthUser authUser, EventQueueBatch batch, HibRole role, boolean recursive, Set<InternalPermission> permissionsToGrant, Set<InternalPermission> permissionsToRevoke) {
 		boolean permissionChanged = false;
 		if (recursive) {
 			ProjectDao projectDao = Tx.get().projectDao();
-			permissionChanged = projectDao.getTagFamilyPermissionRoot(this).applyPermissions(batch, role, recursive, permissionsToGrant, permissionsToRevoke) || permissionChanged;
-			permissionChanged = projectDao.getBranchPermissionRoot(this).applyPermissions(batch, role, recursive, permissionsToGrant, permissionsToRevoke) || permissionChanged;
-			permissionChanged = getBaseNode().applyPermissions(batch, role, recursive, permissionsToGrant, permissionsToRevoke) || permissionChanged;
+			permissionChanged = projectDao.getTagFamilyPermissionRoot(this).applyPermissions(authUser, batch, role, recursive, permissionsToGrant, permissionsToRevoke) || permissionChanged;
+			permissionChanged = projectDao.getBranchPermissionRoot(this).applyPermissions(authUser, batch, role, recursive, permissionsToGrant, permissionsToRevoke) || permissionChanged;
+			permissionChanged = getBaseNode().applyPermissions(authUser, batch, role, recursive, permissionsToGrant, permissionsToRevoke) || permissionChanged;
 		}
-		permissionChanged = HibCoreElement.super.applyPermissions(batch, role, recursive, permissionsToGrant, permissionsToRevoke) || permissionChanged;
+		permissionChanged = HibCoreElement.super.applyPermissions(authUser, batch, role, recursive, permissionsToGrant, permissionsToRevoke) || permissionChanged;
 		return permissionChanged;
 
 	}

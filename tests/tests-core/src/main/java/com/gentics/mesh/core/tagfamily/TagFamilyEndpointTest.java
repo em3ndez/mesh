@@ -22,6 +22,7 @@ import static io.netty.handler.codec.http.HttpResponseStatus.BAD_REQUEST;
 import static io.netty.handler.codec.http.HttpResponseStatus.CONFLICT;
 import static io.netty.handler.codec.http.HttpResponseStatus.FORBIDDEN;
 import static io.netty.handler.codec.http.HttpResponseStatus.INTERNAL_SERVER_ERROR;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
@@ -52,9 +53,9 @@ import com.gentics.mesh.core.data.tag.HibTag;
 import com.gentics.mesh.core.data.tagfamily.HibTagFamily;
 import com.gentics.mesh.core.db.CommonTx;
 import com.gentics.mesh.core.db.Tx;
+import com.gentics.mesh.core.rest.SortOrder;
 import com.gentics.mesh.core.rest.common.ContainerType;
 import com.gentics.mesh.core.rest.common.Permission;
-import com.gentics.mesh.core.rest.error.GenericRestException;
 import com.gentics.mesh.core.rest.event.tag.TagMeshEventModel;
 import com.gentics.mesh.core.rest.event.tagfamily.TagFamilyMeshEventModel;
 import com.gentics.mesh.core.rest.tag.TagFamilyCreateRequest;
@@ -63,6 +64,8 @@ import com.gentics.mesh.core.rest.tag.TagFamilyResponse;
 import com.gentics.mesh.core.rest.tag.TagFamilyUpdateRequest;
 import com.gentics.mesh.parameter.impl.PagingParametersImpl;
 import com.gentics.mesh.parameter.impl.RolePermissionParametersImpl;
+import com.gentics.mesh.parameter.impl.SortingParametersImpl;
+import com.gentics.mesh.rest.client.MeshRestClientMessageException;
 import com.gentics.mesh.test.MeshTestSetting;
 import com.gentics.mesh.test.context.AbstractMeshTest;
 import com.gentics.mesh.test.definition.BasicRestTestcases;
@@ -98,7 +101,6 @@ public class TagFamilyEndpointTest extends AbstractMeshTest implements BasicRest
 					response.getRolePerms());
 			assertThat(response.getRolePerms()).hasPerm(Permission.basicPermissions());
 		}
-
 	}
 
 	@Test
@@ -127,6 +129,32 @@ public class TagFamilyEndpointTest extends AbstractMeshTest implements BasicRest
 			String uuid = tagFamily.getUuid();
 			call(() -> client().findTags(PROJECT_NAME, uuid));
 		}
+	}
+
+	@Test
+	@Override
+	public void testReadPermittedSorted() throws Exception {
+		for (int i = 0; i < 10; i++) {
+			final String name = "test12345_" + i;
+			TagFamilyCreateRequest request = new TagFamilyCreateRequest();
+			request.setName(name);
+			TagFamilyResponse response = call(() -> client().createTagFamily(PROJECT_NAME, request));
+			if ((i % 2) == 0) {
+				tx(tx -> {
+					tx.roleDao().revokePermissions(role(), tx.tagFamilyDao().findByUuid(response.getUuid()), READ_PERM);
+				});
+			}
+		}
+		TagFamilyListResponse list = call(() -> client().findTagFamilies(PROJECT_NAME, new SortingParametersImpl("name", SortOrder.DESCENDING)));
+		assertEquals("Total data size should be 7", 7, list.getData().size());
+		assertThat(list.getData()).isSortedAccordingTo((a, b) -> b.getName().compareTo(a.getName()));
+	}
+
+	@Test
+	@Override
+	public void testReadPermittedSortedWrongField() throws Exception {
+		MeshRestClientMessageException error = call(() -> client().findTagFamilies(PROJECT_NAME, new SortingParametersImpl("existiertleidernicht", SortOrder.DESCENDING)), BAD_REQUEST);
+		assertThat(error.getResponseMessage().getMessage()).as("Error message").startsWith("The following column names are not allowed for sorting: [existiertleidernicht].");
 	}
 
 	@Test
@@ -208,6 +236,7 @@ public class TagFamilyEndpointTest extends AbstractMeshTest implements BasicRest
 			assertEquals(totalPages, tagList.getMetainfo().getPageCount());
 		}
 
+		verifySorting(param -> call(() -> client().findTagFamilies(PROJECT_NAME, param)), TagFamilyResponse::getName, "name", "List of tag family names");
 	}
 
 	@Test
@@ -482,15 +511,13 @@ public class TagFamilyEndpointTest extends AbstractMeshTest implements BasicRest
 				for (HibNode node : tagDao.getNodes(tag, branch)) {
 					if (!taggedNodes.contains(node.getUuid())) {
 						taggedNodes.add(node.getUuid());
-						for (ContainerType containerType : Arrays.asList(ContainerType.DRAFT,
-								ContainerType.PUBLISHED)) {
-							for (HibNodeFieldContainer fieldContainer : tx.contentDao()
-									.getFieldContainers(node, branch, containerType)) {
+						for (ContainerType containerType : Arrays.asList(ContainerType.DRAFT, ContainerType.PUBLISHED)) {
+							for (HibNodeFieldContainer fieldContainer : tx.contentDao().getFieldContainers(node, branch, containerType)) {
 								HibSchemaVersion schema = node.getSchemaContainer().getLatestVersion();
 								storeCount++;
 								assertThat(trackingSearchProvider()).hasStore(
 										ContentDao.composeIndexName(project.getUuid(), branch.getUuid(),
-												schema.getUuid(), containerType, null),
+												schema.getUuid(), containerType, null, null),
 										ContentDao.composeDocumentId(node.getUuid(),
 												fieldContainer.getLanguageTag()));
 							}
@@ -498,19 +525,8 @@ public class TagFamilyEndpointTest extends AbstractMeshTest implements BasicRest
 					}
 				}
 			}
-
 			assertThat(trackingSearchProvider()).hasEvents(storeCount + 1, 0, 0, 0, 0);
 		}
-	}
-
-	@Test
-	@Override
-	public void testUpdateWithBogusUuid() throws GenericRestException, Exception {
-		TagFamilyUpdateRequest request = new TagFamilyUpdateRequest();
-		request.setName("new Name");
-
-		call(() -> client().updateTagFamily(PROJECT_NAME, "bogus", request), BAD_REQUEST, "error_illegal_uuid",
-				"bogus");
 	}
 
 	@Test

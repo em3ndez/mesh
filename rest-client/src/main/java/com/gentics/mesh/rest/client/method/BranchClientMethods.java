@@ -7,6 +7,9 @@ import com.gentics.mesh.core.rest.branch.BranchUpdateRequest;
 import com.gentics.mesh.core.rest.branch.info.BranchInfoMicroschemaList;
 import com.gentics.mesh.core.rest.branch.info.BranchInfoSchemaList;
 import com.gentics.mesh.core.rest.common.GenericMessageResponse;
+import com.gentics.mesh.core.rest.common.ObjectPermissionGrantRequest;
+import com.gentics.mesh.core.rest.common.ObjectPermissionResponse;
+import com.gentics.mesh.core.rest.common.ObjectPermissionRevokeRequest;
 import com.gentics.mesh.core.rest.schema.MicroschemaReference;
 import com.gentics.mesh.core.rest.schema.SchemaReference;
 import com.gentics.mesh.core.rest.tag.TagListResponse;
@@ -69,7 +72,7 @@ public interface BranchClientMethods {
 	 * @param request
 	 * @return
 	 */
-	MeshRequest<BranchResponse> updateBranch(String projectName, String branchUuid, BranchUpdateRequest request);
+	MeshRequest<BranchResponse> updateBranch(String projectName, String branchUuid, BranchUpdateRequest request, ParameterProvider... parameters);
 
 	/**
 	 * Get schema versions assigned to a branch.
@@ -78,7 +81,7 @@ public interface BranchClientMethods {
 	 * @param branchUuid
 	 * @return
 	 */
-	MeshRequest<BranchInfoSchemaList> getBranchSchemaVersions(String projectName, String branchUuid);
+	MeshRequest<BranchInfoSchemaList> getBranchSchemaVersions(String projectName, String branchUuid, ParameterProvider... parameters);
 
 	/**
 	 * Assign the given schema versions to the branch.
@@ -107,7 +110,7 @@ public interface BranchClientMethods {
 	 * @param branchUuid
 	 * @return
 	 */
-	MeshRequest<BranchInfoMicroschemaList> getBranchMicroschemaVersions(String projectName, String branchUuid);
+	MeshRequest<BranchInfoMicroschemaList> getBranchMicroschemaVersions(String projectName, String branchUuid, ParameterProvider... parameters);
 
 	/**
 	 * Assign the given microschema versions to the branch.
@@ -206,4 +209,35 @@ public interface BranchClientMethods {
 	 */
 	MeshRequest<TagListResponse> updateTagsForBranch(String projectName, String branchUuid, TagListUpdateRequest request);
 
+	/**
+	 * Get the role permissions on the branch
+	 * 
+	 * @param projectName
+	 *            Name of the project
+	 * @param uuid    Uuid of the branch
+	 * @return request
+	 */
+	MeshRequest<ObjectPermissionResponse> getBranchRolePermissions(String projectName, String uuid);
+
+	/**
+	 * Grant permissions on the branch to roles
+	 * 
+	 * @param projectName
+	 *            Name of the project
+	 * @param uuid Uuid of the branch
+	 * @param request request
+	 * @return mesh request
+	 */
+	MeshRequest<ObjectPermissionResponse> grantBranchRolePermissions(String projectName, String uuid, ObjectPermissionGrantRequest request);
+
+	/**
+	 * Revoke permissions on the branch from roles
+	 * 
+	 * @param projectName
+	 *            Name of the project
+	 * @param uuid Uuid of the branch
+	 * @param request request
+	 * @return mesh request
+	 */
+	MeshRequest<ObjectPermissionResponse> revokeBranchRolePermissions(String projectName, String uuid, ObjectPermissionRevokeRequest request);
 }

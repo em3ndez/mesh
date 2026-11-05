@@ -41,7 +41,7 @@ public class ReferenceImageCreator {
 		String tmpDir = new File("target", "tmp_" + System.currentTimeMillis()).getAbsolutePath();
 		options.setImageCacheDirectory(tmpDir);
 
-		ImgscalrImageManipulator manipulator = new ImgscalrImageManipulator(vertx, options, null);
+		ImgscalrImageManipulator manipulator = new ImgscalrImageManipulator(vertx, options, null, null);
 
 		readImageConfig().blockingForEach(image -> {
 			String imageName = image.getString("name");
@@ -58,7 +58,7 @@ public class ReferenceImageCreator {
 			fs.moveBlocking(file, targetPath);
 		});
 
-		fs.deleteRecursiveBlocking(tmpDir, true);
+		fs.deleteRecursiveBlocking(tmpDir);
 
 		vertx.close();
 	}

@@ -5,16 +5,24 @@ import java.io.InputStream;
 import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
+import java.util.Optional;
+import java.util.concurrent.Callable;
 
+import org.apache.commons.lang3.tuple.Pair;
+
+import com.gentics.mesh.etc.config.MeshOptions;
+import com.gentics.mesh.etc.config.VertxOptions;
+
+import io.netty.handler.codec.http.HttpResponseStatus;
 import io.vertx.core.AsyncResult;
 import io.vertx.core.Handler;
-import io.vertx.core.Promise;
 import io.vertx.core.file.FileSystem;
-import io.vertx.core.http.impl.HttpUtils;
+import io.vertx.core.internal.net.RFC3986;
 import io.vertx.core.net.impl.URIDecoder;
 import io.vertx.ext.web.Route;
 import io.vertx.ext.web.Router;
 import io.vertx.ext.web.RoutingContext;
+import io.vertx.ext.web.handler.FileSystemAccess;
 import io.vertx.ext.web.handler.StaticHandler;
 import io.vertx.ext.web.impl.Utils;
 
@@ -37,6 +45,15 @@ public interface RestPlugin extends MeshPlugin {
 	 */
 	default Router createProjectRouter() {
 		return null;
+	}
+
+	/**
+	 * Create a pair of routers, global and project. Note that this method will be invoked multiple times in order to register the endpoints to all REST verticles.
+	 * 
+	 * @return
+	 */
+	default Pair<Router, Router> createRouters() {
+		return Pair.of(createGlobalRouter(), createProjectRouter());
 	}
 
 	/**
@@ -107,8 +124,7 @@ public interface RestPlugin extends MeshPlugin {
 				break;
 			}
 		}
-		StaticHandler staticHandler = StaticHandler.create().setAllowRootFileSystemAccess(allowRootAccess)
-				.setWebRoot(webRoot);
+		StaticHandler staticHandler = StaticHandler.create(allowRootAccess ? FileSystemAccess.ROOT : FileSystemAccess.RELATIVE, webRoot);
 		if (prepareStaticHandler != null) {
 			prepareStaticHandler.handle(staticHandler);
 		}
@@ -117,8 +133,8 @@ public interface RestPlugin extends MeshPlugin {
 		// handler serve the file
 		route.handler(rc ->  {
 			FileSystem fs = vertx().fileSystem();
-			String uriDecodedPath = URIDecoder.decodeURIComponent(rc.normalisedPath(), false);
-			String path = HttpUtils.removeDots(uriDecodedPath.replace('\\', '/'));
+			String uriDecodedPath = URIDecoder.decodeURIComponent(rc.normalizedPath(), false);
+			String path = RFC3986.removeDotSegments(uriDecodedPath.replace('\\', '/'));
 
 			// filePath is something like "webroot/get/the/file.txt" (if get/the/file.txt is requested from the route)
 			String filePath = base + Utils.pathOffset(path, rc);
@@ -128,15 +144,27 @@ public interface RestPlugin extends MeshPlugin {
 
 			// get the url of the requested file from the classpath (will be null, if the resource does not exist)
 			URL url = getClass().getClassLoader().getResource(filePath);
+
+            // Special case: requests that resolve to a directory path (e.g. "/webroot/formgen")
+            // must not be treated as a file. Otherwise we would cache a file at storage/[base]/formgen
+            // which then blocks creation of the correct directory structure.
+			// We only allow to request a file otherwise 404
+            URL dirUrl = getClass().getClassLoader().getResource(filePath.endsWith("/") ? filePath : filePath + "/");
+            if (dirUrl != null) {
+				rc.fail(HttpResponseStatus.NOT_FOUND.code());
+                return;
+            }
+
 			if (url != null) {
 				// this is the handler, which will copy the file
-				Handler<Promise<Object>> copy = prom -> {
-					storageFile.getParentFile().mkdirs();
+				Callable<Object> copy = () -> {
+					if (!storageFile.getParentFile().exists()) {
+						if (!storageFile.getParentFile().mkdirs()) {
+							throw new IllegalStateException("Could not create folders for the cached static file: " + storageFile.getPath());
+						}
+					}
 					try (InputStream in = getClass().getClassLoader().getResourceAsStream(filePath)) {
-						Files.copy(in, storageFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
-						prom.complete();
-					} catch (Exception e) {
-						prom.fail(e);
+						return Files.copy(in, storageFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
 					}
 				};
 
@@ -150,15 +178,15 @@ public interface RestPlugin extends MeshPlugin {
 				};
 
 				// check whether the file already exists in the storage dir
-				fs.exists(storagePath, handler -> {
+				fs.exists(storagePath).andThen(handler -> {
 					if (handler.succeeded()) {
 						if (handler.result()) {
 							// file exists, so check, whether it is too old
-							fs.props(storagePath, props -> {
+							fs.props(storagePath).andThen(props -> {
 								if (props.succeeded()) {
 									// if the file is too old, copy it again from the classpath
 									if (props.result().lastModifiedTime() < handlerCreationTime) {
-										vertx().executeBlocking(copy, result);
+										vertx().executeBlocking(copy, isOrderedBlockingHandlers()).andThen(result);
 									} else {
 										rc.next();
 									}
@@ -168,7 +196,7 @@ public interface RestPlugin extends MeshPlugin {
 							});
 						} else {
 							// file does not exist, so copy it from the classpath
-							vertx().executeBlocking(copy, result);
+							vertx().executeBlocking(copy, isOrderedBlockingHandlers()).andThen(result);
 						}
 					} else {
 						rc.fail(handler.cause());
@@ -177,11 +205,11 @@ public interface RestPlugin extends MeshPlugin {
 			} else {
 				// resource does not exist in the classpath, so check whether the file
 				// exists in the storage dir
-				fs.exists(storagePath, handler -> {
+				fs.exists(storagePath).andThen(handler -> {
 					if (handler.succeeded()) {
 						if (handler.result()) {
 							// if the file (still) exists in the storage dir, remove it
-							fs.delete(storagePath, delHandler -> {
+							fs.delete(storagePath).andThen(delHandler -> {
 								rc.next();
 							});
 						} else {
@@ -195,5 +223,10 @@ public interface RestPlugin extends MeshPlugin {
 		}).handler(staticHandler);
 
 		return route;
+	}
+
+	private boolean isOrderedBlockingHandlers() {
+		return Optional.ofNullable(environment().options()).map(MeshOptions::getVertxOptions)
+				.map(VertxOptions::isOrderedBlockingHandlers).orElse(true);
 	}
 }

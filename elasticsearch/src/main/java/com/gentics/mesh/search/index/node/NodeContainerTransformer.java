@@ -7,23 +7,30 @@ import static com.gentics.mesh.core.rest.common.ContainerType.PUBLISHED;
 import static com.gentics.mesh.search.index.MappingHelper.NAME_KEY;
 import static com.gentics.mesh.search.index.MappingHelper.UUID_KEY;
 import static com.gentics.mesh.util.DateUtils.toISO8601;
+import static com.gentics.mesh.util.PreparationUtil.getPreparedData;
 
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Optional;
+import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 import javax.inject.Inject;
 import javax.inject.Singleton;
 
 import org.apache.commons.lang3.NotImplementedException;
 import org.jsoup.Jsoup;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.gentics.mesh.core.data.HibFieldContainer;
+import com.gentics.mesh.core.data.HibImageDataElement;
 import com.gentics.mesh.core.data.HibNodeFieldContainer;
-import com.gentics.mesh.core.data.binary.HibBinary;
-import com.gentics.mesh.core.data.dao.BranchDao;
+import com.gentics.mesh.core.data.branch.HibBranch;
 import com.gentics.mesh.core.data.dao.ContentDao;
 import com.gentics.mesh.core.data.dao.NodeDao;
 import com.gentics.mesh.core.data.dao.RoleDao;
@@ -34,11 +41,14 @@ import com.gentics.mesh.core.data.node.field.HibBinaryField;
 import com.gentics.mesh.core.data.node.field.HibBooleanField;
 import com.gentics.mesh.core.data.node.field.HibDateField;
 import com.gentics.mesh.core.data.node.field.HibHtmlField;
+import com.gentics.mesh.core.data.node.field.HibImageDataField;
+import com.gentics.mesh.core.data.node.field.HibJsonField;
 import com.gentics.mesh.core.data.node.field.HibNumberField;
 import com.gentics.mesh.core.data.node.field.HibStringField;
 import com.gentics.mesh.core.data.node.field.list.HibBooleanFieldList;
 import com.gentics.mesh.core.data.node.field.list.HibDateFieldList;
 import com.gentics.mesh.core.data.node.field.list.HibHtmlFieldList;
+import com.gentics.mesh.core.data.node.field.list.HibJsonFieldList;
 import com.gentics.mesh.core.data.node.field.list.HibMicronodeFieldList;
 import com.gentics.mesh.core.data.node.field.list.HibNodeFieldList;
 import com.gentics.mesh.core.data.node.field.list.HibNumberFieldList;
@@ -47,6 +57,7 @@ import com.gentics.mesh.core.data.node.field.nesting.HibMicronodeField;
 import com.gentics.mesh.core.data.node.field.nesting.HibNodeField;
 import com.gentics.mesh.core.data.project.HibProject;
 import com.gentics.mesh.core.data.role.HibRole;
+import com.gentics.mesh.core.data.s3binary.S3HibBinaryField;
 import com.gentics.mesh.core.data.schema.HibMicroschemaVersion;
 import com.gentics.mesh.core.data.schema.HibSchemaVersion;
 import com.gentics.mesh.core.data.tag.HibTag;
@@ -59,17 +70,18 @@ import com.gentics.mesh.core.rest.node.field.binary.Location;
 import com.gentics.mesh.core.rest.schema.BinaryExtractOptions;
 import com.gentics.mesh.core.rest.schema.BinaryFieldSchema;
 import com.gentics.mesh.core.rest.schema.FieldSchema;
+import com.gentics.mesh.core.rest.schema.S3BinaryExtractOptions;
+import com.gentics.mesh.core.rest.schema.S3BinaryFieldSchema;
+import com.gentics.mesh.core.rest.schema.SchemaVersionModel;
 import com.gentics.mesh.core.rest.schema.impl.ListFieldSchemaImpl;
-import com.gentics.mesh.core.result.Result;
 import com.gentics.mesh.etc.config.MeshOptions;
+import com.gentics.mesh.handler.DataHolderContext;
 import com.gentics.mesh.search.index.AbstractTransformer;
 import com.gentics.mesh.util.ETag;
 
 import io.reactivex.Observable;
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
-import io.vertx.core.logging.Logger;
-import io.vertx.core.logging.LoggerFactory;
 
 /**
  * Transformer which can be used to transform a {@link HibNodeFieldContainer} into a elasticsearch document. Additionally the matching mapping can also be
@@ -130,19 +142,18 @@ public class NodeContainerTransformer extends AbstractTransformer<HibNodeFieldCo
 	 * @param document
 	 * @param node
 	 * @param type
+	 * @param dhc
 	 */
-	private void addPermissionInfo(JsonObject document, HibNode node, ContainerType type) {
+	private void addPermissionInfo(JsonObject document, HibNode node, ContainerType type, DataHolderContext dhc) {
 		List<String> roleUuids = new ArrayList<>();
 
-		for (HibRole role : roleDao.getRolesWithPerm(node, READ_PERM)) {
-			roleUuids.add(role.getUuid());
-		}
+		roleUuids.addAll(getPreparedData(node, dhc, "node", "read_permissions",
+				n -> roleDao.getRolesWithPerm(n, READ_PERM).stream().map(HibRole::getUuid).collect(Collectors.toSet())));
 
 		// Also add the roles which would grant read on published nodes if the container is published.
 		if (type == PUBLISHED) {
-			for (HibRole role : roleDao.getRolesWithPerm(node, READ_PUBLISHED_PERM)) {
-				roleUuids.add(role.getUuid());
-			}
+			roleUuids.addAll(getPreparedData(node, dhc, "node", "read_published_permissions",
+					n -> roleDao.getRolesWithPerm(n, READ_PUBLISHED_PERM).stream().map(HibRole::getUuid).collect(Collectors.toSet())));
 		}
 		document.put("_roleUuids", roleUuids);
 	}
@@ -202,64 +213,36 @@ public class NodeContainerTransformer extends AbstractTransformer<HibNodeFieldCo
 					}
 				}
 				break;
+			case S3BINARY:
+				S3HibBinaryField s3binaryField = container.getS3Binary(name);
+				S3BinaryExtractOptions extractS3Options = ((S3BinaryFieldSchema) fieldSchema).getS3BinaryExtractOptions();
+				boolean shouldIncludeBinaryMetadata = (extractS3Options != null && extractS3Options.getMetadata()) || (extractS3Options == null && options.getSearchOptions().isIncludeBinaryFields());
+				boolean shouldIncludeBinaryContent = (extractS3Options != null && extractS3Options.getContent()) ||	(extractS3Options == null && options.getSearchOptions().isIncludeBinaryFields());
+
+				fillCommonBinaryData(name, s3binaryField, fieldsMap, fieldSchema, shouldIncludeBinaryContent, shouldIncludeBinaryMetadata, binaryFieldInfo -> {
+					binaryFieldInfo.put("s3ObjectKey", s3binaryField.getBinary().getS3ObjectKey());
+				});
+				break;
 			case BINARY:
 				HibBinaryField binaryField = container.getBinary(name);
-				if (binaryField != null) {
-					JsonObject binaryFieldInfo = new JsonObject();
-					fieldsMap.put(name, binaryFieldInfo);
-					binaryFieldInfo.put("filename", binaryField.getFileName());
-					binaryFieldInfo.put("mimeType", binaryField.getMimeType());
-					binaryFieldInfo.put("dominantColor", binaryField.getImageDominantColor());
+				BinaryExtractOptions extractOptions = ((BinaryFieldSchema) fieldSchema).getBinaryExtractOptions();
+				shouldIncludeBinaryMetadata = (extractOptions != null && extractOptions.getMetadata()) || (extractOptions == null && options.getSearchOptions().isIncludeBinaryFields());
+				shouldIncludeBinaryContent = (extractOptions != null && extractOptions.getContent()) ||	(extractOptions == null && options.getSearchOptions().isIncludeBinaryFields());
 
-					HibBinary binary = binaryField.getBinary();
-					if (binary != null) {
-						binaryFieldInfo.put("filesize", binary.getSize());
-						binaryFieldInfo.put("sha512sum", binary.getSHA512Sum());
-						binaryFieldInfo.put("width", binary.getImageWidth());
-						binaryFieldInfo.put("height", binary.getImageHeight());
-					}
-
-					BinaryExtractOptions extractOptions = ((BinaryFieldSchema) fieldSchema).getBinaryExtractOptions();
-					if ((extractOptions != null && extractOptions.getMetadata()) ||
-						(extractOptions == null && options.getSearchOptions().isIncludeBinaryFields())) {
-						// Add the metadata
-						BinaryMetadata metadata = binaryField.getMetadata();
-						if (metadata != null) {
-							JsonObject binaryFieldMetadataInfo = new JsonObject();
-							binaryFieldInfo.put("metadata", binaryFieldMetadataInfo);
-
-							for (Entry<String, String> entry : metadata.getMap().entrySet()) {
-								binaryFieldMetadataInfo.put(entry.getKey(), entry.getValue());
-							}
-
-							Location loc = metadata.getLocation();
-							if (loc != null) {
-								JsonObject locationInfo = new JsonObject();
-								binaryFieldMetadataInfo.put("location", locationInfo);
-								locationInfo.put("lon", loc.getLon());
-								locationInfo.put("lat", loc.getLat());
-								// Add height outside of object to prevent ES error
-								binaryFieldMetadataInfo.put("location-z", loc.getAlt());
-							}
-						}
-					}
-
-					if ((extractOptions != null && extractOptions.getContent()) ||
-						(extractOptions == null && options.getSearchOptions().isIncludeBinaryFields())) {
-						// Plain text
-						String plainText = binaryField.getPlainText();
-						if (plainText != null) {
-							JsonObject file = new JsonObject();
-							binaryFieldInfo.put("file", file);
-							file.put("content", plainText);
-						}
-					}
-				}
+				fillCommonBinaryData(name, binaryField, fieldsMap, fieldSchema, shouldIncludeBinaryContent, shouldIncludeBinaryMetadata, binaryFieldInfo -> {
+					binaryFieldInfo.put("sha512sum", binaryField.getBinary().getSHA512Sum());
+				});
 				break;
 			case BOOLEAN:
 				HibBooleanField booleanField = container.getBoolean(name);
 				if (booleanField != null) {
 					fieldsMap.put(name, booleanField.getBoolean());
+				}
+				break;
+			case JSON:
+				HibJsonField jsonField = container.getJson(name);
+				if (jsonField != null) {
+					fieldsMap.put(name, jsonField.getJson());
 				}
 				break;
 			case DATE:
@@ -280,24 +263,29 @@ public class NodeContainerTransformer extends AbstractTransformer<HibNodeFieldCo
 			case NODE:
 				HibNodeField nodeField = container.getNode(name);
 				if (nodeField != null) {
-					fieldsMap.put(name, nodeField.getNode().getUuid());
+					Optional.ofNullable(nodeField.getNode()).ifPresent(referenced -> {
+						fieldsMap.put(name, referenced.getUuid());
+					});
 				}
 				break;
 			case LIST:
 				if (fieldSchema instanceof ListFieldSchemaImpl) {
 					ListFieldSchemaImpl listFieldSchema = (ListFieldSchemaImpl) fieldSchema;
-					switch (listFieldSchema.getListType()) {
-					case "node":
+					switch (FieldTypes.valueByName(listFieldSchema.getListType())) {
+					case NODE:
 						HibNodeFieldList graphNodeList = container.getNodeList(fieldSchema.getName());
 						if (graphNodeList != null) {
 							List<String> nodeItems = new ArrayList<>();
 							for (HibNodeField listItem : graphNodeList.getList()) {
-								nodeItems.add(listItem.getNode().getUuid());
+								HibNode node = listItem.getNode();
+								if (node != null) {
+									nodeItems.add(node.getUuid());
+								}
 							}
 							fieldsMap.put(fieldSchema.getName(), nodeItems);
 						}
 						break;
-					case "date":
+					case DATE:
 						HibDateFieldList graphDateList = container.getDateList(fieldSchema.getName());
 						if (graphDateList != null) {
 							List<Long> dateItems = new ArrayList<>();
@@ -307,7 +295,7 @@ public class NodeContainerTransformer extends AbstractTransformer<HibNodeFieldCo
 							fieldsMap.put(fieldSchema.getName(), dateItems);
 						}
 						break;
-					case "number":
+					case NUMBER:
 						HibNumberFieldList graphNumberList = container.getNumberList(fieldSchema.getName());
 						if (graphNumberList != null) {
 							List<Number> numberItems = new ArrayList<>();
@@ -319,7 +307,7 @@ public class NodeContainerTransformer extends AbstractTransformer<HibNodeFieldCo
 							fieldsMap.put(fieldSchema.getName(), numberItems);
 						}
 						break;
-					case "boolean":
+					case BOOLEAN:
 						HibBooleanFieldList graphBooleanList = container.getBooleanList(fieldSchema.getName());
 						if (graphBooleanList != null) {
 							List<String> booleanItems = new ArrayList<>();
@@ -329,7 +317,7 @@ public class NodeContainerTransformer extends AbstractTransformer<HibNodeFieldCo
 							fieldsMap.put(fieldSchema.getName(), booleanItems);
 						}
 						break;
-					case "micronode":
+					case MICRONODE:
 						HibMicronodeFieldList micronodeGraphFieldList = container.getMicronodeList(fieldSchema.getName());
 						if (micronodeGraphFieldList != null) {
 							// Add list of micronode objects
@@ -344,7 +332,7 @@ public class NodeContainerTransformer extends AbstractTransformer<HibNodeFieldCo
 							}).toList().blockingGet());
 						}
 						break;
-					case "string":
+					case STRING:
 						HibStringFieldList graphStringList = container.getStringList(fieldSchema.getName());
 						if (graphStringList != null) {
 							List<String> stringItems = new ArrayList<>();
@@ -358,7 +346,7 @@ public class NodeContainerTransformer extends AbstractTransformer<HibNodeFieldCo
 							fieldsMap.put(fieldSchema.getName(), stringItems);
 						}
 						break;
-					case "html":
+					case HTML:
 						HibHtmlFieldList graphHtmlList = container.getHTMLList(fieldSchema.getName());
 						if (graphHtmlList != null) {
 							List<String> htmlItems = new ArrayList<>();
@@ -375,6 +363,16 @@ public class NodeContainerTransformer extends AbstractTransformer<HibNodeFieldCo
 								}
 							}
 							fieldsMap.put(fieldSchema.getName(), htmlItems);
+						}
+						break;
+					case JSON:
+						HibJsonFieldList sqlJsonList = container.getJsonList(fieldSchema.getName());
+						if (sqlJsonList != null) {
+							List<JsonNode> jsonItems = new ArrayList<>();
+							for (HibJsonField listItem : sqlJsonList.getList()) {
+								jsonItems.add(listItem.getJson());
+							}
+							fieldsMap.put(fieldSchema.getName(), jsonItems);
 						}
 						break;
 					default:
@@ -407,7 +405,56 @@ public class NodeContainerTransformer extends AbstractTransformer<HibNodeFieldCo
 
 		}
 		document.put(fieldKey, fieldsMap);
+	}
 
+	private <T extends HibImageDataField> void fillCommonBinaryData(String name, T binaryField, Map<String, Object> fieldsMap, FieldSchema fieldSchema, 
+				boolean shouldIncludeBinaryContent, boolean shouldIncludeBinaryMetadata, Consumer<JsonObject> customizer) {
+		if (binaryField != null) {
+			JsonObject binaryFieldInfo = new JsonObject();
+			fieldsMap.put(name, binaryFieldInfo);
+			binaryFieldInfo.put("filename", binaryField.getFileName());
+			binaryFieldInfo.put("mimeType", binaryField.getMimeType());
+			binaryFieldInfo.put("dominantColor", binaryField.getImageDominantColor());
+
+			HibImageDataElement binary = binaryField.getBinary();
+			if (binary != null) {
+				binaryFieldInfo.put("filesize", binary.getSize());
+				binaryFieldInfo.put("width", binary.getImageWidth());
+				binaryFieldInfo.put("height", binary.getImageHeight());
+			}
+
+			if (shouldIncludeBinaryMetadata) {
+				// Add the metadata
+				BinaryMetadata metadata = binaryField.getMetadata();
+				if (metadata != null) {
+					JsonObject binaryFieldMetadataInfo = new JsonObject();
+					binaryFieldInfo.put("metadata", binaryFieldMetadataInfo);
+
+					for (Entry<String, String> entry : metadata.getMap().entrySet()) {
+						binaryFieldMetadataInfo.put(entry.getKey(), entry.getValue());
+					}
+
+					Location loc = metadata.getLocation();
+					if (loc != null) {
+						JsonObject locationInfo = new JsonObject();
+						binaryFieldMetadataInfo.put("location", locationInfo);
+						locationInfo.put("lon", loc.getLon());
+						locationInfo.put("lat", loc.getLat());
+						// Add height outside of object to prevent ES error
+						binaryFieldMetadataInfo.put("location-z", loc.getAlt());
+					}
+				}
+			}
+			if (shouldIncludeBinaryContent) {
+				// Plain text
+				String plainText = binaryField.getPlainText();
+				if (plainText != null) {
+					JsonObject file = new JsonObject();
+					binaryFieldInfo.put("file", file);
+					file.put("content", plainText);
+				}
+			}
+		}
 	}
 
 	/**
@@ -455,7 +502,7 @@ public class NodeContainerTransformer extends AbstractTransformer<HibNodeFieldCo
 	 */
 	@Override
 	@Deprecated
-	public JsonObject toDocument(HibNodeFieldContainer object) {
+	public JsonObject toDocument(HibNodeFieldContainer object, DataHolderContext dhc) {
 		throw new NotImplementedException("Use toDocument(container, branchUuid) instead");
 	}
 
@@ -468,7 +515,7 @@ public class NodeContainerTransformer extends AbstractTransformer<HibNodeFieldCo
 	 */
 	public JsonObject toPermissionPartial(HibNode node, ContainerType type) {
 		JsonObject document = new JsonObject();
-		addPermissionInfo(document, node, type);
+		addPermissionInfo(document, node, type, null);
 		return document;
 	}
 
@@ -478,17 +525,17 @@ public class NodeContainerTransformer extends AbstractTransformer<HibNodeFieldCo
 	 * @param container
 	 * @param branchUuid
 	 * @param type
+	 * @param dhc
 	 * @return
 	 */
-	public String generateVersion(HibNodeFieldContainer container, String branchUuid, ContainerType type) {
+	public String generateVersion(HibNodeFieldContainer container, HibProject project, HibBranch branch, ContainerType type, DataHolderContext dhc) {
 		ContentDao contentDao = Tx.get().contentDao();
-		HibNode node = contentDao.getNode(container);
-		HibProject project = node.getProject();
+		HibNode node = getPreparedData(container, dhc, "container", "nodes", contentDao::getNode);
 
 		StringBuilder builder = new StringBuilder();
 		builder.append(container.getElementVersion());
 		builder.append("|");
-		builder.append(branchUuid);
+		builder.append(branch.getUuid());
 		builder.append("|");
 		builder.append(type.name());
 		builder.append("|");
@@ -504,7 +551,7 @@ public class NodeContainerTransformer extends AbstractTransformer<HibNodeFieldCo
 	 */
 	@Override
 	@Deprecated
-	public String generateVersion(HibNodeFieldContainer element) {
+	public String generateVersion(HibNodeFieldContainer element, DataHolderContext dhc) {
 		throw new NotImplementedException("Use generateVersion(container, branchUuid) instead");
 	}
 
@@ -514,15 +561,15 @@ public class NodeContainerTransformer extends AbstractTransformer<HibNodeFieldCo
 	 * @param container
 	 * @param branchUuid
 	 * @param type
+	 * @param dhc
 	 * @return
 	 */
-	public JsonObject toDocument(HibNodeFieldContainer container, String branchUuid, ContainerType type) {
+	public JsonObject toDocument(HibNodeFieldContainer container, HibProject project, HibBranch branch, ContainerType type, DataHolderContext dhc) {
 		TagDao tagDao = Tx.get().tagDao();
 		NodeDao nodeDao = Tx.get().nodeDao();
 		ContentDao contentDao = Tx.get().contentDao();
-		BranchDao branchDao = Tx.get().branchDao();
 
-		HibNode node = contentDao.getNode(container);
+		HibNode node = getPreparedData(container, dhc, "container", "nodes", contentDao::getNode);
 		JsonObject document = new JsonObject();
 		document.put("uuid", node.getUuid());
 		addUser(document, "editor", container.getEditor());
@@ -530,35 +577,37 @@ public class NodeContainerTransformer extends AbstractTransformer<HibNodeFieldCo
 		addUser(document, "creator", node.getCreator());
 		document.put("created", toISO8601(node.getCreationTimestamp()));
 
-		addProject(document, node.getProject());
-		Result<HibTag> tags = tagDao.getTags(node, branchDao.getLatestBranch(node.getProject()));
+		addProject(document, project);
+		List<HibTag> tags = getPreparedData(node, dhc, "node", "tags", n -> tagDao.getTags(n, branch).list());
 		addTags(document, tags);
-		addTagFamilies(document, tagDao.getTags(node, branchDao.getLatestBranch(node.getProject())));
-		addPermissionInfo(document, node, type);
+		addTagFamilies(document, tags);
+		addPermissionInfo(document, node, type, dhc);
 
 		// The basenode has no parent.
-		if (nodeDao.getParentNode(node, branchUuid) != null) {
-			addParentNodeInfo(document, nodeDao.getParentNode(node, branchUuid));
+		HibNode parentNode = getPreparedData(node, dhc, "node", "parents", n -> nodeDao.getParentNode(node, branch.getUuid()));
+		if (parentNode != null) {
+			addParentNodeInfo(document, parentNode);
 		}
 
 		String language = container.getLanguageTag();
 		document.put("language", language);
-		addSchema(document, contentDao.getSchemaContainerVersion(container));
+		HibSchemaVersion schemaVersion = contentDao.getSchemaContainerVersion(container);
+		SchemaVersionModel schema = schemaVersion.getSchema();
+		addSchema(document, schemaVersion);
 
-		addFields(document, "fields", container, contentDao.getSchemaContainerVersion(container).getSchema().getFields());
+		addFields(document, "fields", container, schema.getFields());
 		if (log.isTraceEnabled()) {
 			String json = document.toString();
-			log.trace("Search index json:");
-			log.trace(json);
+			log.trace("Search index json:\n{}", json);
 		}
 
 		// Add display field value
 		JsonObject displayField = new JsonObject();
-		displayField.put("key", contentDao.getSchemaContainerVersion(container).getSchema().getDisplayField());
+		displayField.put("key", schema.getDisplayField());
 		displayField.put("value", contentDao.getDisplayFieldValue(container));
 		document.put("displayField", displayField);
-		document.put("branchUuid", branchUuid);
-		document.put(VERSION_KEY, generateVersion(container, branchUuid, type));
+		document.put("branchUuid", branch.getUuid());
+		document.put(VERSION_KEY, generateVersion(container, project, branch, type, dhc));
 		document.put(BUCKET_ID_KEY, container.getBucketId());
 		return document;
 	}

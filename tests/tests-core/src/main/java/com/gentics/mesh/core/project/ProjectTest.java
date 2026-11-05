@@ -18,7 +18,6 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.Test;
 
-import com.gentics.mesh.context.BulkActionContext;
 import com.gentics.mesh.context.InternalActionContext;
 import com.gentics.mesh.context.impl.InternalRoutingActionContextImpl;
 import com.gentics.mesh.core.data.dao.RoleDao;
@@ -74,10 +73,9 @@ public class ProjectTest extends AbstractMeshTest implements BasicObjectTestcase
 	@Test
 	@Override
 	public void testDelete() throws Exception {
-		BulkActionContext bac = createBulkContext();
 		try (Tx tx = tx()) {
 			HibProject project = Tx.get().projectDao().findByUuid(project().getUuid());
-			tx.projectDao().delete(project, bac);
+			tx.projectDao().delete(project);
 			assertElement(tx.projectDao(), projectUuid(), false);
 		}
 	}
@@ -148,18 +146,20 @@ public class ProjectTest extends AbstractMeshTest implements BasicObjectTestcase
 	@Test
 	@Override
 	public void testCreateDelete() throws Exception {
-		try (Tx tx = tx()) {
+		String uuid = tx(tx -> {
 			HibProject project = createProject("newProject", "folder");
 			assertNotNull(project);
-			String uuid = project.getUuid();
-			BulkActionContext bac = createBulkContext();
+			return project.getUuid();
+		});
+
+		tx(tx -> {
 			HibProject foundProject = tx.projectDao().findByUuid(uuid);
 			assertNotNull(foundProject);
-			tx.projectDao().delete(project, bac);
+			tx.projectDao().delete(foundProject);
 			// TODO check for attached nodes
 			foundProject = tx.projectDao().findByUuid(uuid);
 			assertNull(foundProject);
-		}
+		});
 	}
 
 	@Test
@@ -247,7 +247,6 @@ public class ProjectTest extends AbstractMeshTest implements BasicObjectTestcase
 	@Test
 	public void testDeleteWithTaggedBranches() {
 		int numBranches = 5;
-		BulkActionContext bac = createBulkContext();
 
 		String projectUuid = tx(() -> project().getUuid());
 		String initialBranchUuid = tx(() -> project().getInitialBranch().getUuid());
@@ -285,7 +284,7 @@ public class ProjectTest extends AbstractMeshTest implements BasicObjectTestcase
 
 		tx(tx -> {
 			HibProject project = tx.projectDao().findByUuid(project().getUuid());
-			tx.projectDao().delete(project, bac);
+			tx.projectDao().delete(project);
 		});
 
 		tx(tx -> {

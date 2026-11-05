@@ -1,0 +1,64 @@
+{
+	nodeRefSlugLike: nodes(
+	  filter: {
+	    schema: {is: folder}
+	    fields: {
+	      folder: {
+	        nodeRef: {node: {schema: {is: content} fields: { content: { slug: { like: "%.html" } } }}}
+	      }
+	    }
+	  }
+	  sort: {
+	    fields: {
+	      folder: {
+	        nodeRef: {node: { fields: { content: { slug: ASCENDING } }}}
+	      }
+	    }
+	  }
+	) {
+	    # [$.data.nodeRefSlugLike.elements.length()=2]
+	    # [$.data.nodeRefSlugLike.elements=<is-sorted-by:fields.nodeRef.fields.slug:asc>]
+		elements {
+	      uuid
+	      schema {
+	        name
+	      }
+	    }
+	}
+	
+	nodeRefIsNotNull: nodes(
+	  filter: {
+	    schema: {is: folder}
+	    fields: {
+	      folder: {
+	        nodeRef: {isNull:false}
+	      }
+	    }
+	  }
+	  sort: {
+	    fields: {
+	      folder: {
+	        nodeRef: {node: { fields: { content: { slug: ASCENDING } }}}
+	      }
+	    }
+	  }
+	) {
+	    # [$.data.nodeRefIsNotNull.elements.length()=3]
+	    # [$.data.nodeRefIsNotNull.elements=<is-sorted-by:fields.nodeRef.fields.slug:asc>]
+		elements {
+	      uuid
+	      fields {
+	        ... on folder {
+	          nodeRef {
+	            fields {
+	              ... on content {
+	                slug
+	              }
+	            }
+	          }
+	        }
+	      }
+	    }
+	}
+}
+# [$.errors=<is-undefined>]

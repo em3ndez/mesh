@@ -1,27 +1,27 @@
 package com.gentics.mesh.core.graphql;
 
-import static com.gentics.mesh.MeshVersion.CURRENT_API_VERSION;
 import static com.gentics.mesh.assertj.MeshAssertions.assertThat;
 import static com.gentics.mesh.test.ClientHelper.call;
 import static com.gentics.mesh.test.TestDataProvider.CONTENT_UUID;
 import static com.gentics.mesh.test.TestDataProvider.NEWS_UUID;
+import static com.gentics.mesh.test.TestDataProvider.PRODUCTS_UUID;
 import static com.gentics.mesh.test.TestDataProvider.PROJECT_NAME;
 import static java.util.Objects.hash;
 import static org.assertj.core.api.Assertions.assertThat;
 
-import java.text.ParseException;
-import java.text.SimpleDateFormat;
+import java.time.Instant;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.function.Consumer;
 import java.util.stream.Collector;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
-import com.gentics.mesh.test.MeshTestSetting;
-import com.gentics.mesh.test.TestSize;
+import org.apache.commons.lang3.RandomStringUtils;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -29,8 +29,8 @@ import org.junit.runners.Parameterized;
 import org.junit.runners.Parameterized.Parameters;
 
 import com.gentics.mesh.FieldUtil;
+import com.gentics.mesh.MeshVersion;
 import com.gentics.mesh.assertj.impl.JsonObjectAssert;
-import com.gentics.mesh.context.impl.DummyBulkActionContext;
 import com.gentics.mesh.core.data.HibNodeFieldContainer;
 import com.gentics.mesh.core.data.binary.HibBinary;
 import com.gentics.mesh.core.data.dao.MicroschemaDao;
@@ -39,14 +39,18 @@ import com.gentics.mesh.core.data.node.HibNode;
 import com.gentics.mesh.core.data.node.field.list.HibBooleanFieldList;
 import com.gentics.mesh.core.data.node.field.list.HibDateFieldList;
 import com.gentics.mesh.core.data.node.field.list.HibHtmlFieldList;
+import com.gentics.mesh.core.data.node.field.list.HibJsonFieldList;
 import com.gentics.mesh.core.data.node.field.list.HibMicronodeFieldList;
 import com.gentics.mesh.core.data.node.field.list.HibNodeFieldList;
 import com.gentics.mesh.core.data.node.field.list.HibNumberFieldList;
 import com.gentics.mesh.core.data.node.field.list.HibStringFieldList;
 import com.gentics.mesh.core.data.node.field.nesting.HibMicronodeField;
+import com.gentics.mesh.core.data.s3binary.S3HibBinary;
 import com.gentics.mesh.core.data.schema.HibMicroschema;
 import com.gentics.mesh.core.data.schema.HibSchema;
 import com.gentics.mesh.core.db.Tx;
+import com.gentics.mesh.core.graphql.javafilter.JavaGraphQLEndpointTest;
+import com.gentics.mesh.core.graphql.nativefilter.NativeGraphQLEndpointTest;
 import com.gentics.mesh.core.rest.branch.BranchUpdateRequest;
 import com.gentics.mesh.core.rest.graphql.GraphQLResponse;
 import com.gentics.mesh.core.rest.microschema.impl.MicroschemaCreateRequest;
@@ -67,6 +71,7 @@ import com.gentics.mesh.core.rest.schema.BinaryFieldSchema;
 import com.gentics.mesh.core.rest.schema.BooleanFieldSchema;
 import com.gentics.mesh.core.rest.schema.DateFieldSchema;
 import com.gentics.mesh.core.rest.schema.HtmlFieldSchema;
+import com.gentics.mesh.core.rest.schema.JsonFieldSchema;
 import com.gentics.mesh.core.rest.schema.ListFieldSchema;
 import com.gentics.mesh.core.rest.schema.MicronodeFieldSchema;
 import com.gentics.mesh.core.rest.schema.NodeFieldSchema;
@@ -77,20 +82,27 @@ import com.gentics.mesh.core.rest.schema.impl.BinaryFieldSchemaImpl;
 import com.gentics.mesh.core.rest.schema.impl.BooleanFieldSchemaImpl;
 import com.gentics.mesh.core.rest.schema.impl.DateFieldSchemaImpl;
 import com.gentics.mesh.core.rest.schema.impl.HtmlFieldSchemaImpl;
+import com.gentics.mesh.core.rest.schema.impl.JsonFieldSchemaImpl;
 import com.gentics.mesh.core.rest.schema.impl.ListFieldSchemaImpl;
 import com.gentics.mesh.core.rest.schema.impl.MicronodeFieldSchemaImpl;
 import com.gentics.mesh.core.rest.schema.impl.NodeFieldSchemaImpl;
 import com.gentics.mesh.core.rest.schema.impl.NumberFieldSchemaImpl;
+import com.gentics.mesh.core.rest.schema.impl.S3BinaryFieldSchemaImpl;
 import com.gentics.mesh.core.rest.schema.impl.SchemaReferenceImpl;
 import com.gentics.mesh.core.rest.schema.impl.StringFieldSchemaImpl;
 import com.gentics.mesh.core.rest.user.NodeReference;
 import com.gentics.mesh.core.rest.user.UserResponse;
 import com.gentics.mesh.core.rest.user.UserUpdateRequest;
+import com.gentics.mesh.json.JsonUtil;
 import com.gentics.mesh.parameter.impl.PublishParametersImpl;
 import com.gentics.mesh.parameter.impl.VersioningParametersImpl;
 import com.gentics.mesh.rest.client.MeshRestClient;
+import com.gentics.mesh.test.MeshTestSetting;
+import com.gentics.mesh.test.ResetTestDb;
+import com.gentics.mesh.test.TestSize;
 import com.gentics.mesh.test.context.AbstractMeshTest;
-import com.hazelcast.util.function.Consumer;
+import com.gentics.mesh.test.context.NoConsistencyCheck;
+import com.gentics.mesh.util.UUIDUtil;
 
 import io.reactivex.Completable;
 import io.reactivex.Single;
@@ -99,7 +111,8 @@ import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
 
 @RunWith(Parameterized.class)
-@MeshTestSetting(testSize = TestSize.FULL, startServer = true)
+@MeshTestSetting(testSize = TestSize.FULL, startServer = true, resetBetweenTests = ResetTestDb.ON_HASH_CHANGE)
+@NoConsistencyCheck
 public class GraphQLEndpointTest extends AbstractMeshTest {
 
 	protected static final String NODE_WITH_LINKS_UUID = "8d2f5769fe114353af5769fe11e35355";
@@ -117,6 +130,12 @@ public class GraphQLEndpointTest extends AbstractMeshTest {
 
 	protected final Consumer<JsonObject> assertion;
 	protected MeshRestClient client;
+
+	private static final List<String> DATES = List.of(
+			"2012-07-11T08:55:21Z",
+			"2014-07-11T10:55:30Z",
+			"2000-07-11T10:55:00Z"
+	);
 
 	/**
 	 * Default constructor.
@@ -140,63 +159,92 @@ public class GraphQLEndpointTest extends AbstractMeshTest {
 		this.version = version;
 		this.assertion = assertion;
 		this.apiVersion = apiVersion;
+
+		testContext.setDbHash(Objects.hash(this.withMicroschema, this.withBranchPathPrefix));
+	}
+
+	protected static Stream<List<Object>> queries() {
+		return Stream.<List<Object>>of(
+				Arrays.asList("full-query", true, false, "draft"),
+				Arrays.asList("role-user-group-query", true, false, "draft"),
+				Arrays.asList("group-query", true, false, "draft"),
+				Arrays.asList("schema-query", true, false, "draft"),
+				// Arrays.asList("schema-projects-query", true, false, "draft"),
+				Arrays.asList("microschema-query", true, false, "draft"),
+				Arrays.asList("paging-query", true, false, "draft"),
+				Arrays.asList("tagFamily-query", true, false, "draft"),
+				Arrays.asList("node-query", true, false, "draft"),
+				Arrays.asList("node-tag-query", true, false, "draft"),
+				Arrays.asList("nodes-query", true, false, "draft"),
+				Arrays.asList("nodes-query-by-uuids", true, false, "draft"),
+				Arrays.asList("nodes-query-by-uuids-common-filters", true, false, "draft"),
+				Arrays.asList("node-breadcrumb-query", true, false, "draft"),
+				Arrays.asList("node-breadcrumb-query-with-lang", true, false, "draft"),
+				Arrays.asList("node-language-fallback-query", true, false, "draft"),
+				Arrays.asList("node-schema-languages-query", true, false, "draft"),
+				Arrays.asList("node-languages-query", true, false, "draft", (Consumer<JsonObject>) GraphQLEndpointTest::checkNodeLanguageContent),
+				Arrays.asList("node-not-found-webroot-query", true, false, "draft"),
+				Arrays.asList("node-webroot-query", true, false, "draft"),
+				Arrays.asList("node-webroot-urlfield-query", true, false, "draft"),
+				Arrays.asList("node-relations-query", true, false, "draft"),
+				Arrays.asList("node-fields-query", true, false, "draft"),
+				Arrays.asList("node-fields-no-microschema-query", false, false, "draft"),
+				Arrays.asList("node/link/webroot", true, false, "draft"),
+				Arrays.asList("node/link/webroot-medium", true, false, "draft"),
+				Arrays.asList("node/link/webroot-short", true, false, "draft"),
+				Arrays.asList("node/link/children", true, false, "draft", (Consumer<JsonObject>) GraphQLEndpointTest::checkNodeLinkChildrenResponse),
+				Arrays.asList("node/link/webroot-language", true, false, "draft"),
+				Arrays.asList("node/link/reference", true, false, "draft"),
+				Arrays.asList("node/link/null-reference", true, false, "draft"),
+				Arrays.asList("node-field-list-path-query", true, false, "draft"),
+				Arrays.asList("project-query", true, false, "draft"),
+				Arrays.asList("tag-query", true, false, "draft"),
+				Arrays.asList("branch-query", true, true, "draft"),
+				Arrays.asList("user-query", true, false, "draft"),
+				Arrays.asList("microschema-projects-query", true, false, "draft"),
+				Arrays.asList("node-version-published-query", true, false, "published"),
+				Arrays.asList("node/breadcrumb-root", true, false, "draft"),
+				Arrays.asList("node/versionslist", true, false, "draft"),
+				Arrays.asList("permissions", true, false, "draft"),
+				Arrays.asList("user-node-reference", true, false, "draft"),
+				Arrays.asList("filtering/children", true, false, "draft"),
+				Arrays.asList("filtering/children-paged", true, false, "draft"),
+				Arrays.asList("filtering/nodes-creator-editor", true, false, "draft"),
+				Arrays.asList("filtering/groups", true, false, "draft"),
+				Arrays.asList("filtering/roles", true, false, "draft"),
+				Arrays.asList("filtering/users", true, false, "draft"),
+				Arrays.asList("filtering/nodes-string-field-native", true, false, "draft"),
+				Arrays.asList("filtering/nodes-boolean-field-native", true, false, "draft"),
+				Arrays.asList("filtering/nodes-number-field-native", true, false, "draft"),
+				Arrays.asList("filtering/nodes-date-field-native", true, false, "draft"),
+				Arrays.asList("filtering/nodes-stringlist-field-native", true, false, "draft"),
+				Arrays.asList("filtering/nodes-numberlist-field-native", true, false, "draft"),
+				Arrays.asList("filtering/nodes-booleanlist-field-native", true, false, "draft"),
+				Arrays.asList("filtering/nodes-datelist-field-native", true, false, "draft"),
+				Arrays.asList("filtering/nodes-htmllist-field-native", true, false, "draft"),
+				Arrays.asList("filtering/nodes-node-field-native", true, false, "draft"),
+				Arrays.asList("filtering/nodes-json-field-native", true, false, "draft"),
+				Arrays.asList("filtering/nodes-micronode-field-native", true, false, "draft"),
+				Arrays.asList("filtering/nodes-binary-field-native", true, false, "draft"),
+				Arrays.asList("filtering/nodes-s3binary-field-native", true, false, "draft"),
+				Arrays.asList("filtering/nodes-nodelist-field-native", true, false, "draft"),
+				Arrays.asList("filtering/nodes-jsonlist-field-native", true, false, "draft"),
+				Arrays.asList("filtering/nodes-micronodelist-field-native", true, false, "draft"),
+				Arrays.asList("filtering/nodes-paged", true, false, "draft")
+			);
 	}
 
 	@Parameters(name = "query={0},version={3},apiVersion={5}")
 	public static Collection<Object[]> paramData() {
-		return Stream.<List<Object>>of(
-			Arrays.asList("full-query", true, false, "draft"),
-			Arrays.asList("role-user-group-query", true, false, "draft"),
-			Arrays.asList("group-query", true, false, "draft"),
-			Arrays.asList("schema-query", true, false, "draft"),
-			// Arrays.asList("schema-projects-query", true, false, "draft"),
-			Arrays.asList("microschema-query", true, false, "draft"),
-			Arrays.asList("paging-query", true, false, "draft"),
-			Arrays.asList("tagFamily-query", true, false, "draft"),
-			Arrays.asList("node-query", true, false, "draft"),
-			Arrays.asList("node-tag-query", true, false, "draft"),
-			Arrays.asList("nodes-query", true, false, "draft"),
-			Arrays.asList("nodes-query-by-uuids", true, false, "draft"),
-			Arrays.asList("node-breadcrumb-query", true, false, "draft"),
-			Arrays.asList("node-breadcrumb-query-with-lang", true, false, "draft"),
-			Arrays.asList("node-language-fallback-query", true, false, "draft"),
-			Arrays.asList("node-languages-query", true, false, "draft", (Consumer<JsonObject>) GraphQLEndpointTest::checkNodeLanguageContent),
-			Arrays.asList("node-not-found-webroot-query", true, false, "draft"),
-			Arrays.asList("node-webroot-query", true, false, "draft"),
-			Arrays.asList("node-webroot-urlfield-query", true, false, "draft"),
-			Arrays.asList("node-relations-query", true, false, "draft"),
-			Arrays.asList("node-fields-query", true, false, "draft"),
-			Arrays.asList("node-fields-no-microschema-query", false, false, "draft"),
-			Arrays.asList("node/link/webroot", true, false, "draft"),
-			Arrays.asList("node/link/children", true, false, "draft", (Consumer<JsonObject>) GraphQLEndpointTest::checkNodeLinkChildrenResponse),
-			Arrays.asList("node/link/webroot-language", true, false, "draft"),
-			Arrays.asList("node/link/reference", true, false, "draft"),
-			Arrays.asList("node-field-list-path-query", true, false, "draft"),
-			Arrays.asList("project-query", true, false, "draft"),
-			Arrays.asList("tag-query", true, false, "draft"),
-			Arrays.asList("branch-query", true, true, "draft"),
-			Arrays.asList("user-query", true, false, "draft"),
-			Arrays.asList("microschema-projects-query", true, false, "draft"),
-			Arrays.asList("node-version-published-query", true, false, "published"),
-			Arrays.asList("filtering/children", true, false, "draft"),
-			Arrays.asList("filtering/nodes", true, false, "draft"),
-			Arrays.asList("filtering/nodes-en", true, false, "draft"),
-			Arrays.asList("filtering/nodes-jp", true, false, "draft"),
-			Arrays.asList("filtering/nodes-creator-editor", true, false, "draft"),
-			Arrays.asList("filtering/users", true, false, "draft"),
-			Arrays.asList("filtering/groups", true, false, "draft"),
-			Arrays.asList("filtering/roles", true, false, "draft"),
-			Arrays.asList("node/breadcrumb-root", true, false, "draft"),
-			Arrays.asList("node/versionslist", true, false, "draft"),
-			Arrays.asList("permissions", true, false, "draft"),
-			Arrays.asList("user-node-reference", true, false, "draft")
-		)
-		.flatMap(testCase -> IntStream.rangeClosed(1, CURRENT_API_VERSION).mapToObj(version -> {
-			// Make sure all testData entries have six parts.
-			Object[] array = testCase.toArray(new Object[6]);
-			array[5] = "v" + version;
-			return array;
-		})).collect(Collectors.toList());
+		return Stream.of(GraphQLEndpointTest.queries(), JavaGraphQLEndpointTest.queries(), NativeGraphQLEndpointTest.queries())
+				.flatMap(java.util.function.Function.identity())
+				.flatMap(testCase -> IntStream.rangeClosed(1, MeshVersion.CURRENT_API_VERSION)
+				.mapToObj(version -> {
+					// Make sure all testData entries have six parts.
+					Object[] array = testCase.toArray(new Object[6]);
+					array[5] = "v" + version;
+					return array;
+				})).collect(Collectors.toList());
 	}
 
 	@Before
@@ -206,296 +254,380 @@ public class GraphQLEndpointTest extends AbstractMeshTest {
 
 	@Test
 	public void testNodeQuery() throws Exception {
-		String microschemaUuid = null;
-		if (withMicroschema) {
-			// 1. Create the microschema
-			MicroschemaCreateRequest microschemaRequest = new MicroschemaCreateRequest();
-			microschemaRequest.setName("TestMicroschema");
-			microschemaRequest.addField(FieldUtil.createStringFieldSchema("text"));
-			microschemaRequest.addField(FieldUtil.createNodeFieldSchema("nodeRef").setAllowedSchemas("content"));
-			microschemaRequest.addField(FieldUtil.createListFieldSchema("nodeList", "node"));
-			MicroschemaResponse microschemaResponse = call(() -> client.createMicroschema(microschemaRequest));
-			microschemaUuid = microschemaResponse.getUuid();
-			call(() -> client.assignMicroschemaToProject(PROJECT_NAME, microschemaResponse.getUuid()));
-		} else {
-			try (Tx tx = tx()) {
-				for (HibMicroschema microschema : tx.microschemaDao().findAll()) {
-					tx.microschemaDao().delete(microschema, new DummyBulkActionContext());
+		if (testContext.needsSetup()) {
+			String microschemaUuid = null;
+			if (withMicroschema) {
+				// 1. Create the microschema
+				MicroschemaCreateRequest microschemaRequest = new MicroschemaCreateRequest();
+				microschemaRequest.setName("TestMicroschema");
+				microschemaRequest.addField(FieldUtil.createStringFieldSchema("text"));
+				microschemaRequest.addField(FieldUtil.createNodeFieldSchema("nodeRef").setAllowedSchemas("content"));
+				microschemaRequest.addField(FieldUtil.createListFieldSchema("nodeList", "node"));
+				microschemaRequest.addField(FieldUtil.createJsonFieldSchema("json"));
+				MicroschemaResponse microschemaResponse = call(() -> client.createMicroschema(microschemaRequest));
+				microschemaUuid = microschemaResponse.getUuid();
+				call(() -> client.assignMicroschemaToProject(PROJECT_NAME, microschemaResponse.getUuid()));
+			} else {
+				try (Tx tx = tx()) {
+					for (HibMicroschema microschema : tx.microschemaDao().findAll()) {
+						tx.microschemaDao().delete(microschema);
+					}
+					tx.success();
 				}
+			}
+
+			// update branch
+			if (withBranchPathPrefix) {
+				call(() -> client.updateBranch(PROJECT_NAME, initialBranchUuid(),
+						new BranchUpdateRequest().setHostname("getmesh.io").setSsl(false).setPathPrefix("/base/path")));
+			}
+
+			try (Tx tx = tx()) {
+				MicroschemaDao microschemaDao = tx.microschemaDao();
+
+				HibNode node = folder("2015");
+				HibNode folder = folder("news");
+				tx.contentDao().updateWebrootPathInfo(tx.contentDao().getFieldContainer(folder, "de"), initialBranchUuid(), null);
+				tx.contentDao().updateWebrootPathInfo(tx.contentDao().getFieldContainer(folder, "de"), initialBranchUuid(), null);
+
+				HibNode node2 = content();
+				tx.contentDao().updateWebrootPathInfo(tx.contentDao().getFieldContainer(node2, "en"), initialBranchUuid(), null);
+				tx.contentDao().updateWebrootPathInfo(tx.contentDao().getFieldContainer(node2, "de"), initialBranchUuid(), null);
+				HibNode node3 = folder("2014");
+
+				// Update the folder schema to contain all fields
+				HibSchema schemaContainer = schemaContainer("folder");
+				SchemaVersionModel schema = schemaContainer.getLatestVersion().getSchema();
+				schema.setUrlFields("niceUrl");
+				schema.setAutoPurge(true);
+				NodeFieldSchema nodeFieldSchema = new NodeFieldSchemaImpl();
+				nodeFieldSchema.setName("nodeRef");
+				nodeFieldSchema.setLabel("Some label");
+				nodeFieldSchema.setAllowedSchemas("folder");
+				schema.addField(nodeFieldSchema);
+
+				BinaryFieldSchema binaryFieldSchema = new BinaryFieldSchemaImpl();
+				binaryFieldSchema.setName("binary");
+				schema.addField(binaryFieldSchema);
+
+				S3BinaryFieldSchemaImpl s3BinaryFieldSchema = new S3BinaryFieldSchemaImpl();
+				s3BinaryFieldSchema.setName("s3Binary");
+				schema.addField(s3BinaryFieldSchema);
+
+				NumberFieldSchema numberFieldSchema = new NumberFieldSchemaImpl();
+				numberFieldSchema.setName("number");
+				schema.addField(numberFieldSchema);
+
+				DateFieldSchema dateFieldSchema = new DateFieldSchemaImpl();
+				dateFieldSchema.setName("date");
+				schema.addField(dateFieldSchema);
+
+				HtmlFieldSchema htmlFieldSchema = new HtmlFieldSchemaImpl();
+				htmlFieldSchema.setName("html");
+				schema.addField(htmlFieldSchema);
+
+				HtmlFieldSchema htmlLinkFieldSchema = new HtmlFieldSchemaImpl();
+				htmlLinkFieldSchema.setName("htmlLink");
+				schema.addField(htmlLinkFieldSchema);
+
+				HtmlFieldSchema emptyLinkFieldSchema = new HtmlFieldSchemaImpl();
+				emptyLinkFieldSchema.setName("emptyLink");
+				schema.addField(emptyLinkFieldSchema);
+
+				StringFieldSchema stringFieldSchema = new StringFieldSchemaImpl();
+				stringFieldSchema.setName("string");
+				schema.addField(stringFieldSchema);
+
+				StringFieldSchema niceUrlFieldSchema = new StringFieldSchemaImpl();
+				niceUrlFieldSchema.setName("niceUrl");
+				schema.addField(niceUrlFieldSchema);
+
+				StringFieldSchema stringLinkFieldSchema = new StringFieldSchemaImpl();
+				stringLinkFieldSchema.setName("stringLink");
+				schema.addField(stringLinkFieldSchema);
+
+				JsonFieldSchema jsonFieldSchema = new JsonFieldSchemaImpl();
+				jsonFieldSchema.setName("json");
+				schema.addField(jsonFieldSchema);
+
+				BooleanFieldSchema booleanFieldSchema = new BooleanFieldSchemaImpl();
+				booleanFieldSchema.setName("boolean");
+				schema.addField(booleanFieldSchema);
+
+				ListFieldSchema stringListSchema = new ListFieldSchemaImpl();
+				stringListSchema.setListType("string");
+				stringListSchema.setName("stringList");
+				schema.addField(stringListSchema);
+
+				ListFieldSchema dateListSchema = new ListFieldSchemaImpl();
+				dateListSchema.setListType("date");
+				dateListSchema.setName("dateList");
+				schema.addField(dateListSchema);
+
+				ListFieldSchema nodeListSchema = new ListFieldSchemaImpl();
+				nodeListSchema.setListType("node");
+				nodeListSchema.setName("nodeList");
+				schema.addField(nodeListSchema);
+
+				ListFieldSchema htmlListSchema = new ListFieldSchemaImpl();
+				htmlListSchema.setListType("html");
+				htmlListSchema.setName("htmlList");
+				schema.addField(htmlListSchema);
+
+				ListFieldSchema jsonListSchema = new ListFieldSchemaImpl();
+				jsonListSchema.setListType("json");
+				jsonListSchema.setName("jsonList");
+				schema.addField(jsonListSchema);
+
+				ListFieldSchema booleanListSchema = new ListFieldSchemaImpl();
+				booleanListSchema.setListType("boolean");
+				booleanListSchema.setName("booleanList");
+				schema.addField(booleanListSchema);
+
+				ListFieldSchema numberListSchema = new ListFieldSchemaImpl();
+				numberListSchema.setListType("number");
+				numberListSchema.setName("numberList");
+				schema.addField(numberListSchema);
+
+				ListFieldSchema micronodeListSchema = new ListFieldSchemaImpl();
+				micronodeListSchema.setListType("micronode");
+				micronodeListSchema.setName("micronodeList");
+				schema.addField(micronodeListSchema);
+
+				if (withMicroschema) {
+					MicronodeFieldSchema micronodeFieldSchema = new MicronodeFieldSchemaImpl();
+					micronodeFieldSchema.setAllowedMicroSchemas("vcard");
+					micronodeFieldSchema.setName("micronode");
+					schema.addField(micronodeFieldSchema);
+				}
+				schemaContainer("folder").getLatestVersion().setSchema(schema);
+				actions().updateSchemaVersion(schemaContainer("folder").getLatestVersion());
+
+				// Setup some test data
+				HibNodeFieldContainer container = tx.contentDao().createFieldContainer(node, "en", initialBranch(), user());
+
+				// node
+				container.createNode("nodeRef", node2);
+
+				// number
+				container.createNumber("number").setNumber(42.1);
+
+				// date
+				long milisec = dateToMilis(DATES.get(0));
+				container.createDate("date").setDate(milisec);
+
+				// html
+				container.createHTML("html").setHtml("some html");
+
+				// htmlLink
+				container.createHTML("htmlLink").setHtml("Link: {{mesh.link(\"" + CONTENT_UUID + "\", \"en\")}}");
+
+				// emptyLink
+				container.createHTML("emptyLink").setHtml("Link to nowhere: {{mesh.link(\"00000000000000000000000000000000\", \"en\")}}");
+
+				// string
+				container.createString("string").setString("some string");
+
+				// niceUrl
+				container.createString("niceUrl").setString("/some/url");
+
+				// stringLink
+				container.createString("stringLink").setString("Link: {{mesh.link(\"" + CONTENT_UUID + "\", \"en\")}}");
+
+				// json
+				container.createJson("json").setJson(JsonUtil.getMapper().createObjectNode().put("firstName", "Mickey").put("lastName", "Mouse"));
+
+				// boolean
+				container.createBoolean("boolean").setBoolean(true);
+
+				// binary
+				HibBinary binary = tx.binaries().create("hashsumvalue", 1L).runInExistingTx(tx);
+				binary.setImageHeight(10).setImageWidth(20).setSize(2048);
+				container.createBinary("binary", binary).setImageDominantColor("00FF00")
+					.setImageFocalPoint(new FocalPoint(0.2f, 0.3f)).setMimeType("image/jpeg").setFileName("some_image.jpg");
+
+				// s3binary
+				S3HibBinary s3binary = tx.s3binaries().create(UUIDUtil.randomUUID(), node.getUuid() + "/s3", "test.jpg").runInExistingTx(tx);
+				container.createS3Binary("s3Binary", s3binary).setImageDominantColor("00FF00");
+
+				// stringList
+				HibStringFieldList stringList = container.createStringList("stringList");
+				stringList.createString("A");
+				stringList.createString("B");
+				stringList.createString("C");
+				stringList.createString("D Link: {{mesh.link(\"" + CONTENT_UUID + "\", \"en\")}}");
+
+				// jsonList
+				HibJsonFieldList jsonList = container.createJsonList("jsonList");
+				jsonList.createJson(JsonUtil.getMapper().createObjectNode().put("firstName", "Minnie").put("lastName", "Mouse"));
+				jsonList.createJson(JsonUtil.getMapper().createObjectNode().put("firstName", "Daisy").put("lastName", "Duck"));
+
+				// htmlList
+				HibHtmlFieldList htmlList = container.createHTMLList("htmlList");
+				htmlList.createHTML("A");
+				htmlList.createHTML("B");
+				htmlList.createHTML("C");
+				htmlList.createHTML("D Link: {{mesh.link(\"" + CONTENT_UUID + "\", \"en\")}}");
+
+				// dateList
+				HibDateFieldList dateList = container.createDateList("dateList");
+				dateList.createDate(dateToMilis(DATES.get(0)));
+				dateList.createDate(dateToMilis(DATES.get(1)));
+				dateList.createDate(dateToMilis(DATES.get(2)));
+
+				// numberList
+				HibNumberFieldList numberList = container.createNumberList("numberList");
+				numberList.createNumber(42L);
+				numberList.createNumber(1337);
+				numberList.createNumber(0.314f);
+
+				// booleanList
+				HibBooleanFieldList booleanList = container.createBooleanList("booleanList");
+				booleanList.createBoolean(true);
+				booleanList.createBoolean(null);
+				booleanList.createBoolean(false);
+
+				// nodeList
+				HibNodeFieldList nodeList = container.createNodeList("nodeList");
+				nodeList.createNode(0, node2);
+				nodeList.createNode(1, node3);
+
+				if (withMicroschema) {
+					// micronodeList
+					HibMicronodeFieldList micronodeList = container.createMicronodeList("micronodeList");
+					HibMicronode firstMicronode = micronodeList.createMicronode(microschemaContainer("vcard").getLatestVersion());
+					firstMicronode.createString("firstName").setString("Joe");
+					firstMicronode.createString("lastName").setString("Doe");
+					firstMicronode.createString("address").setString("Somewhere");
+					firstMicronode.createString("postcode").setString("1010");
+
+					HibMicronode secondMicronode = micronodeList.createMicronode(microschemaDao.findByUuid(microschemaUuid).getLatestVersion());
+					secondMicronode.createString("text").setString("Joe");
+					secondMicronode.createNode("nodeRef", content());
+					secondMicronode.createJson("json").setJson(JsonUtil.getMapper().createObjectNode().put("firstName", "Donald").put("lastName", "Duck"));
+
+					HibNodeFieldList micrnodeNodeList = secondMicronode.createNodeList("nodeList");
+					micrnodeNodeList.createNode(0, node2);
+					micrnodeNodeList.createNode(1, node3);
+
+					// micronode
+					HibMicronodeField micronodeField = container.createMicronode("micronode", microschemaContainer("vcard").getLatestVersion());
+					micronodeField.getMicronode().createString("firstName").setString("Joe");
+					micronodeField.getMicronode().createString("lastName").setString("Doe");
+					micronodeField.getMicronode().createString("address").setString("Somewhere");
+					micronodeField.getMicronode().createString("postcode").setString("1010");
+
+					// Second micronode 
+					HibNodeFieldContainer container3 = tx.contentDao().createFieldContainer(node3, "en", initialBranch(), user());
+					// micronodeList
+					micronodeList = container3.createMicronodeList("micronodeList");
+					firstMicronode = micronodeList.createMicronode(microschemaContainer("vcard").getLatestVersion());
+					firstMicronode.createString("firstName").setString("Jane");
+					firstMicronode.createString("lastName").setString("Dow");
+					firstMicronode.createString("address").setString("Overthere");
+					firstMicronode.createString("postcode").setString("8010");
+
+					secondMicronode = micronodeList.createMicronode(microschemaDao.findByUuid(microschemaUuid).getLatestVersion());
+					secondMicronode.createString("text").setString("Jane");
+					secondMicronode.createNode("nodeRef", content());
+
+					micrnodeNodeList = secondMicronode.createNodeList("nodeList");
+					micrnodeNodeList.createNode(0, node2);
+					micrnodeNodeList.createNode(1, node3);
+
+					// micronode
+					micronodeField = container3.createMicronode("micronode", microschemaContainer("vcard").getLatestVersion());
+					micronodeField.getMicronode().createString("firstName").setString("Jane");
+					micronodeField.getMicronode().createString("lastName").setString("Dow");
+					micronodeField.getMicronode().createString("address").setString("Overthere");
+					micronodeField.getMicronode().createString("postcode").setString("8010");
+				}
+				tx.contentDao().updateWebrootPathInfo(container, initialBranchUuid(), null);
 				tx.success();
 			}
+
+			// Publish all nodes
+			String baseNodeUuid = tx(() -> project().getBaseNode().getUuid());
+			call(() -> client.publishNode(PROJECT_NAME, baseNodeUuid, new PublishParametersImpl().setRecursive(true)));
+
+			// Create a draft node
+			NodeCreateRequest request = new NodeCreateRequest();
+			request.setLanguage("en");
+			request.setSchema(new SchemaReferenceImpl().setName("content"));
+			request.getFields().put("title", FieldUtil.createStringField("some title"));
+			request.getFields().put("teaser", FieldUtil.createStringField("some teaser"));
+			request.getFields().put("slug", FieldUtil.createStringField("new-page"));
+			request.setParentNode(new NodeReference().setUuid(baseNodeUuid));
+			call(() -> client.createNode(PROJECT_NAME, request));
+
+			// Create a node which contains mesh links
+			createLanguageLinkResolvingNode(NODE_WITH_LINKS_UUID, baseNodeUuid, CONTENT_UUID).blockingAwait();
+
+			// Create referencing node (en)
+			NodeCreateRequest request2 = new NodeCreateRequest();
+			request2.setLanguage("en");
+			request2.setSchema(new SchemaReferenceImpl().setName("folder"));
+			request2.getFields().put("nodeRef", FieldUtil.createNodeField(NODE_WITH_LINKS_UUID));
+			request2.getFields().put("nodeList", FieldUtil.createNodeListField(NODE_WITH_LINKS_UUID));
+			request2.getFields().put("slug", FieldUtil.createStringField("node-with-reference-en"));
+			request2.setParentNode(new NodeReference().setUuid(NEWS_UUID));
+			call(() -> client.createNode(NODE_WITH_NODE_REF_UUID, PROJECT_NAME, request2));
+
+			// Create referencing node content (de)
+			NodeUpdateRequest nodeUpdateRequest = new NodeUpdateRequest();
+			nodeUpdateRequest.setLanguage("de");
+			nodeUpdateRequest.setVersion("0.1");
+			nodeUpdateRequest.getFields().put("nodeRef", FieldUtil.createNodeField(NODE_WITH_LINKS_UUID));
+			nodeUpdateRequest.getFields().put("nodeList", FieldUtil.createNodeListField(NODE_WITH_LINKS_UUID));
+			nodeUpdateRequest.getFields().put("slug", FieldUtil.createStringField("node-with-reference-de"));
+			call(() -> client.updateNode(PROJECT_NAME, NODE_WITH_NODE_REF_UUID, nodeUpdateRequest));
+
+			// create a node (which we will delete afterwards)
+			NodeCreateRequest request3 = new NodeCreateRequest();
+			request3.setLanguage("en");
+			request3.setSchema(new SchemaReferenceImpl().setName("folder"));
+			request3.getFields().put("slug", FieldUtil.createStringField(RandomStringUtils.insecure().nextAlphabetic(10)));
+			request3.setParentNode(new NodeReference().setUuid(baseNodeUuid));
+			String nullReferenceUuid = call(() -> client.createNode(PROJECT_NAME, request3)).getUuid();
+
+			// create referencing node
+			NodeResponse products = call(() -> client.findNodeByUuid(PROJECT_NAME, PRODUCTS_UUID));
+			NodeUpdateRequest nodeUpdateRequest2 = JsonUtil.readValue(JsonUtil.toJson(products), NodeUpdateRequest.class);
+			nodeUpdateRequest2.getFields().put("nodeRef", FieldUtil.createNodeField(nullReferenceUuid));
+			nodeUpdateRequest2.getFields().put("nodeList", FieldUtil.createNodeListField(nullReferenceUuid));
+			call(() -> client.updateNode(PROJECT_NAME, PRODUCTS_UUID, nodeUpdateRequest2));
+
+			// delete the referenced node
+			call(() -> client.deleteNode(PROJECT_NAME, nullReferenceUuid));
+
+			// Add node reference to user
+			UserResponse user = call(() -> client.me());
+			NodeResponse newsNode = call(() -> client.findNodeByUuid(PROJECT_NAME, NEWS_UUID));
+			call(() -> client.updateUser(user.getUuid(), new UserUpdateRequest().setNodeReference(newsNode)));
 		}
-
-		// update branch
-		if (withBranchPathPrefix) {
-			call(() -> client.updateBranch(PROJECT_NAME, initialBranchUuid(),
-					new BranchUpdateRequest().setHostname("getmesh.io").setSsl(false).setPathPrefix("/base/path")));
-		}
-
-		try (Tx tx = tx()) {
-			MicroschemaDao microschemaDao = tx.microschemaDao();
-
-			HibNode node = folder("2015");
-			HibNode folder = folder("news");
-			tx.contentDao().updateWebrootPathInfo(tx.contentDao().getFieldContainer(folder, "de"), initialBranchUuid(), null);
-			tx.contentDao().updateWebrootPathInfo(tx.contentDao().getFieldContainer(folder, "de"), initialBranchUuid(), null);
-
-			HibNode node2 = content();
-			tx.contentDao().updateWebrootPathInfo(tx.contentDao().getFieldContainer(node2, "en"), initialBranchUuid(), null);
-			tx.contentDao().updateWebrootPathInfo(tx.contentDao().getFieldContainer(node2, "de"), initialBranchUuid(), null);
-			HibNode node3 = folder("2014");
-
-			// Update the folder schema to contain all fields
-			HibSchema schemaContainer = schemaContainer("folder");
-			SchemaVersionModel schema = schemaContainer.getLatestVersion().getSchema();
-			schema.setUrlFields("niceUrl");
-			schema.setAutoPurge(true);
-			NodeFieldSchema nodeFieldSchema = new NodeFieldSchemaImpl();
-			nodeFieldSchema.setName("nodeRef");
-			nodeFieldSchema.setLabel("Some label");
-			nodeFieldSchema.setAllowedSchemas("folder");
-			schema.addField(nodeFieldSchema);
-
-			BinaryFieldSchema binaryFieldSchema = new BinaryFieldSchemaImpl();
-			binaryFieldSchema.setName("binary");
-			schema.addField(binaryFieldSchema);
-
-			NumberFieldSchema numberFieldSchema = new NumberFieldSchemaImpl();
-			numberFieldSchema.setName("number");
-			schema.addField(numberFieldSchema);
-
-			DateFieldSchema dateFieldSchema = new DateFieldSchemaImpl();
-			dateFieldSchema.setName("date");
-			schema.addField(dateFieldSchema);
-
-			HtmlFieldSchema htmlFieldSchema = new HtmlFieldSchemaImpl();
-			htmlFieldSchema.setName("html");
-			schema.addField(htmlFieldSchema);
-
-			HtmlFieldSchema htmlLinkFieldSchema = new HtmlFieldSchemaImpl();
-			htmlLinkFieldSchema.setName("htmlLink");
-			schema.addField(htmlLinkFieldSchema);
-
-			StringFieldSchema stringFieldSchema = new StringFieldSchemaImpl();
-			stringFieldSchema.setName("string");
-			schema.addField(stringFieldSchema);
-
-			StringFieldSchema niceUrlFieldSchema = new StringFieldSchemaImpl();
-			niceUrlFieldSchema.setName("niceUrl");
-			schema.addField(niceUrlFieldSchema);
-
-			StringFieldSchema stringLinkFieldSchema = new StringFieldSchemaImpl();
-			stringLinkFieldSchema.setName("stringLink");
-			schema.addField(stringLinkFieldSchema);
-
-			BooleanFieldSchema booleanFieldSchema = new BooleanFieldSchemaImpl();
-			booleanFieldSchema.setName("boolean");
-			schema.addField(booleanFieldSchema);
-
-			ListFieldSchema stringListSchema = new ListFieldSchemaImpl();
-			stringListSchema.setListType("string");
-			stringListSchema.setName("stringList");
-			schema.addField(stringListSchema);
-
-			ListFieldSchema dateListSchema = new ListFieldSchemaImpl();
-			dateListSchema.setListType("date");
-			dateListSchema.setName("dateList");
-			schema.addField(dateListSchema);
-
-			ListFieldSchema nodeListSchema = new ListFieldSchemaImpl();
-			nodeListSchema.setListType("node");
-			nodeListSchema.setName("nodeList");
-			schema.addField(nodeListSchema);
-
-			ListFieldSchema htmlListSchema = new ListFieldSchemaImpl();
-			htmlListSchema.setListType("html");
-			htmlListSchema.setName("htmlList");
-			schema.addField(htmlListSchema);
-
-			ListFieldSchema booleanListSchema = new ListFieldSchemaImpl();
-			booleanListSchema.setListType("boolean");
-			booleanListSchema.setName("booleanList");
-			schema.addField(booleanListSchema);
-
-			ListFieldSchema numberListSchema = new ListFieldSchemaImpl();
-			numberListSchema.setListType("number");
-			numberListSchema.setName("numberList");
-			schema.addField(numberListSchema);
-
-			ListFieldSchema micronodeListSchema = new ListFieldSchemaImpl();
-			micronodeListSchema.setListType("micronode");
-			micronodeListSchema.setName("micronodeList");
-			schema.addField(micronodeListSchema);
-
-			if (withMicroschema) {
-				MicronodeFieldSchema micronodeFieldSchema = new MicronodeFieldSchemaImpl();
-				micronodeFieldSchema.setAllowedMicroSchemas("vcard");
-				micronodeFieldSchema.setName("micronode");
-				schema.addField(micronodeFieldSchema);
-			}
-			schemaContainer("folder").getLatestVersion().setSchema(schema);
-			actions().updateSchemaVersion(schemaContainer("folder").getLatestVersion());
-
-			// Setup some test data
-			HibNodeFieldContainer container = tx.contentDao().createFieldContainer(node, "en", initialBranch(), user());
-
-			// node
-			container.createNode("nodeRef", node2);
-
-			// number
-			container.createNumber("number").setNumber(42.1);
-
-			// date
-			long milisec = dateToMilis("2012-07-11 10:55:21");
-			container.createDate("date").setDate(milisec);
-
-			// html
-			container.createHTML("html").setHtml("some html");
-
-			// htmlLink
-			container.createHTML("htmlLink").setHtml("Link: {{mesh.link(\"" + CONTENT_UUID + "\", \"en\")}}");
-
-			// string
-			container.createString("string").setString("some string");
-
-			// niceUrl
-			container.createString("niceUrl").setString("/some/url");
-
-			// stringLink
-			container.createString("stringLink").setString("Link: {{mesh.link(\"" + CONTENT_UUID + "\", \"en\")}}");
-
-			// boolean
-			container.createBoolean("boolean").setBoolean(true);
-
-			// binary
-			HibBinary binary = tx.binaries().create("hashsumvalue", 1L).runInExistingTx(tx);
-			binary.setImageHeight(10).setImageWidth(20).setSize(2048);
-			container.createBinary("binary", binary).setImageDominantColor("00FF00")
-				.setImageFocalPoint(new FocalPoint(0.2f, 0.3f)).setMimeType("image/jpeg");
-
-			// stringList
-			HibStringFieldList stringList = container.createStringList("stringList");
-			stringList.createString("A");
-			stringList.createString("B");
-			stringList.createString("C");
-			stringList.createString("D Link: {{mesh.link(\"" + CONTENT_UUID + "\", \"en\")}}");
-
-			// htmlList
-			HibHtmlFieldList htmlList = container.createHTMLList("htmlList");
-			htmlList.createHTML("A");
-			htmlList.createHTML("B");
-			htmlList.createHTML("C");
-			htmlList.createHTML("D Link: {{mesh.link(\"" + CONTENT_UUID + "\", \"en\")}}");
-
-			// dateList
-			HibDateFieldList dateList = container.createDateList("dateList");
-			dateList.createDate(dateToMilis("2012-07-11 10:55:21"));
-			dateList.createDate(dateToMilis("2014-07-11 10:55:30"));
-			dateList.createDate(dateToMilis("2000-07-11 10:55:00"));
-
-			// numberList
-			HibNumberFieldList numberList = container.createNumberList("numberList");
-			numberList.createNumber(42L);
-			numberList.createNumber(1337);
-			numberList.createNumber(0.314f);
-
-			// booleanList
-			HibBooleanFieldList booleanList = container.createBooleanList("booleanList");
-			booleanList.createBoolean(true);
-			booleanList.createBoolean(null);
-			booleanList.createBoolean(false);
-
-			// nodeList
-			HibNodeFieldList nodeList = container.createNodeList("nodeList");
-			nodeList.createNode(0, node2);
-			nodeList.createNode(1, node3);
-
-			if (withMicroschema) {
-				// micronodeList
-				HibMicronodeFieldList micronodeList = container.createMicronodeList("micronodeList");
-				HibMicronode firstMicronode = micronodeList.createMicronode(microschemaContainer("vcard").getLatestVersion());
-				firstMicronode.createString("firstName").setString("Joe");
-				firstMicronode.createString("lastName").setString("Doe");
-				firstMicronode.createString("address").setString("Somewhere");
-				firstMicronode.createString("postcode").setString("1010");
-
-				HibMicronode secondMicronode = micronodeList.createMicronode(microschemaDao.findByUuid(microschemaUuid).getLatestVersion());
-				secondMicronode.createString("text").setString("Joe");
-				secondMicronode.createNode("nodeRef", content());
-				HibNodeFieldList micrnodeNodeList = secondMicronode.createNodeList("nodeList");
-				micrnodeNodeList.createNode(0, node2);
-				micrnodeNodeList.createNode(1, node3);
-
-				// micronode
-				HibMicronodeField micronodeField = container.createMicronode("micronode", microschemaContainer("vcard").getLatestVersion());
-				micronodeField.getMicronode().createString("firstName").setString("Joe");
-				micronodeField.getMicronode().createString("lastName").setString("Doe");
-				micronodeField.getMicronode().createString("address").setString("Somewhere");
-				micronodeField.getMicronode().createString("postcode").setString("1010");
-			}
-			tx.contentDao().updateWebrootPathInfo(container, initialBranchUuid(), null);
-			tx.success();
-		}
-
-		// Publish all nodes
-		String baseNodeUuid = tx(() -> project().getBaseNode().getUuid());
-		call(() -> client.publishNode(PROJECT_NAME, baseNodeUuid, new PublishParametersImpl().setRecursive(true)));
-
-		// Create a draft node
-		NodeCreateRequest request = new NodeCreateRequest();
-		request.setLanguage("en");
-		request.setSchema(new SchemaReferenceImpl().setName("content"));
-		request.getFields().put("title", FieldUtil.createStringField("some title"));
-		request.getFields().put("teaser", FieldUtil.createStringField("some teaser"));
-		request.getFields().put("slug", FieldUtil.createStringField("new-page"));
-		request.setParentNode(new NodeReference().setUuid(baseNodeUuid));
-		call(() -> client.createNode(PROJECT_NAME, request));
-
-		// Create a node which contains mesh links
-		createLanguageLinkResolvingNode(NODE_WITH_LINKS_UUID, baseNodeUuid, CONTENT_UUID).blockingAwait();
-
-		// Create referencing node (en)
-		NodeCreateRequest request2 = new NodeCreateRequest();
-		request2.setLanguage("en");
-		request2.setSchema(new SchemaReferenceImpl().setName("folder"));
-		request2.getFields().put("nodeRef", FieldUtil.createNodeField(NODE_WITH_LINKS_UUID));
-		request2.getFields().put("nodeList", FieldUtil.createNodeListField(NODE_WITH_LINKS_UUID));
-		request2.getFields().put("slug", FieldUtil.createStringField("node-with-reference-en"));
-		request2.setParentNode(new NodeReference().setUuid(NEWS_UUID));
-		call(() -> client.createNode(NODE_WITH_NODE_REF_UUID, PROJECT_NAME, request2));
-
-		// Create referencing node content (de)
-		NodeUpdateRequest nodeUpdateRequest = new NodeUpdateRequest();
-		nodeUpdateRequest.setLanguage("de");
-		nodeUpdateRequest.setVersion("0.1");
-		nodeUpdateRequest.getFields().put("nodeRef", FieldUtil.createNodeField(NODE_WITH_LINKS_UUID));
-		nodeUpdateRequest.getFields().put("nodeList", FieldUtil.createNodeListField(NODE_WITH_LINKS_UUID));
-		nodeUpdateRequest.getFields().put("slug", FieldUtil.createStringField("node-with-reference-de"));
-		call(() -> client.updateNode(PROJECT_NAME, NODE_WITH_NODE_REF_UUID, nodeUpdateRequest));
-
-		// Add node reference to user
-		UserResponse user = call(() -> client.me());
-		NodeResponse newsNode = call(() -> client.findNodeByUuid(PROJECT_NAME, NEWS_UUID));
-		call(() -> client.updateUser(user.getUuid(), new UserUpdateRequest().setNodeReference(newsNode)));
 
 		// Now execute the query and assert it
 		String query = getGraphQLQuery(queryName, apiVersion).replace("%" + SCHEMA_UUID + "%", schemaContainer("folder").getUuid());
-		//System.out.println(query);
 		GraphQLResponse response = call(
 			() -> client.graphqlQuery(PROJECT_NAME, query, new VersioningParametersImpl().setVersion(version)));
 		JsonObject jsonResponse = new JsonObject(response.toJson());
-		//System.out.println(jsonResponse.encodePrettily());
-		if (assertion == null) {
-			assertThat(jsonResponse)
-					.replacingPlaceholderVariable(SCHEMA_UUID, schemaContainer("folder").getUuid())
-					.compliesToAssertions(queryName, apiVersion);
-		} else {
-			assertion.accept(jsonResponse);
+		try {
+			if (assertion == null) {
+				assertThat(jsonResponse)
+						.withSortComparator(testContext.getSortComparator())
+						.replacingPlaceholderVariable(SCHEMA_UUID, schemaContainer("folder").getUuid())
+						.compliesToAssertions(queryName, apiVersion);
+			} else {
+				assertion.accept(jsonResponse);
+			}
+		} catch (Throwable e) {
+			getTestContext().LOG.error("Assertion failed for: \n{}\nPayload:\n{}", query, jsonResponse.encodePrettily());
+			throw e;
 		}
 	}
 
-	protected long dateToMilis(String date) throws ParseException {
-		return new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").parse(date).getTime();
+	protected long dateToMilis(String date) {
+		return Instant.parse(date).toEpochMilli();
 	}
 
 	protected Completable createLanguageLinkResolvingNode(String nodeUuid, String parentUuid, String referencedUuid) throws Exception {

@@ -1,12 +1,30 @@
 package com.gentics.mesh;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.gentics.mesh.core.rest.micronode.MicronodeResponse;
 import com.gentics.mesh.core.rest.microschema.MicroschemaVersionModel;
 import com.gentics.mesh.core.rest.microschema.impl.MicroschemaCreateRequest;
 import com.gentics.mesh.core.rest.microschema.impl.MicroschemaModelImpl;
 import com.gentics.mesh.core.rest.microschema.impl.MicroschemaUpdateRequest;
-import com.gentics.mesh.core.rest.node.field.*;
-import com.gentics.mesh.core.rest.node.field.impl.*;
+import com.gentics.mesh.core.rest.node.field.BinaryField;
+import com.gentics.mesh.core.rest.node.field.BooleanField;
+import com.gentics.mesh.core.rest.node.field.DateField;
+import com.gentics.mesh.core.rest.node.field.Field;
+import com.gentics.mesh.core.rest.node.field.HtmlField;
+import com.gentics.mesh.core.rest.node.field.JsonField;
+import com.gentics.mesh.core.rest.node.field.MicronodeField;
+import com.gentics.mesh.core.rest.node.field.NumberField;
+import com.gentics.mesh.core.rest.node.field.S3BinaryField;
+import com.gentics.mesh.core.rest.node.field.StringField;
+import com.gentics.mesh.core.rest.node.field.impl.BinaryFieldImpl;
+import com.gentics.mesh.core.rest.node.field.impl.BooleanFieldImpl;
+import com.gentics.mesh.core.rest.node.field.impl.DateFieldImpl;
+import com.gentics.mesh.core.rest.node.field.impl.HtmlFieldImpl;
+import com.gentics.mesh.core.rest.node.field.impl.JsonFieldImpl;
+import com.gentics.mesh.core.rest.node.field.impl.NodeFieldImpl;
+import com.gentics.mesh.core.rest.node.field.impl.NumberFieldImpl;
+import com.gentics.mesh.core.rest.node.field.impl.S3BinaryFieldImpl;
+import com.gentics.mesh.core.rest.node.field.impl.StringFieldImpl;
 import com.gentics.mesh.core.rest.node.field.list.impl.BooleanFieldListImpl;
 import com.gentics.mesh.core.rest.node.field.list.impl.DateFieldListImpl;
 import com.gentics.mesh.core.rest.node.field.list.impl.HtmlFieldListImpl;
@@ -15,8 +33,32 @@ import com.gentics.mesh.core.rest.node.field.list.impl.NodeFieldListImpl;
 import com.gentics.mesh.core.rest.node.field.list.impl.NodeFieldListItemImpl;
 import com.gentics.mesh.core.rest.node.field.list.impl.NumberFieldListImpl;
 import com.gentics.mesh.core.rest.node.field.list.impl.StringFieldListImpl;
-import com.gentics.mesh.core.rest.schema.*;
-import com.gentics.mesh.core.rest.schema.impl.*;
+import com.gentics.mesh.core.rest.schema.BinaryFieldSchema;
+import com.gentics.mesh.core.rest.schema.BooleanFieldSchema;
+import com.gentics.mesh.core.rest.schema.DateFieldSchema;
+import com.gentics.mesh.core.rest.schema.HtmlFieldSchema;
+import com.gentics.mesh.core.rest.schema.JsonFieldSchema;
+import com.gentics.mesh.core.rest.schema.ListFieldSchema;
+import com.gentics.mesh.core.rest.schema.MicronodeFieldSchema;
+import com.gentics.mesh.core.rest.schema.NodeFieldSchema;
+import com.gentics.mesh.core.rest.schema.NumberFieldSchema;
+import com.gentics.mesh.core.rest.schema.S3BinaryFieldSchema;
+import com.gentics.mesh.core.rest.schema.SchemaVersionModel;
+import com.gentics.mesh.core.rest.schema.StringFieldSchema;
+import com.gentics.mesh.core.rest.schema.impl.BinaryFieldSchemaImpl;
+import com.gentics.mesh.core.rest.schema.impl.BooleanFieldSchemaImpl;
+import com.gentics.mesh.core.rest.schema.impl.DateFieldSchemaImpl;
+import com.gentics.mesh.core.rest.schema.impl.HtmlFieldSchemaImpl;
+import com.gentics.mesh.core.rest.schema.impl.JsonFieldSchemaImpl;
+import com.gentics.mesh.core.rest.schema.impl.ListFieldSchemaImpl;
+import com.gentics.mesh.core.rest.schema.impl.MicronodeFieldSchemaImpl;
+import com.gentics.mesh.core.rest.schema.impl.MicroschemaReferenceImpl;
+import com.gentics.mesh.core.rest.schema.impl.NodeFieldSchemaImpl;
+import com.gentics.mesh.core.rest.schema.impl.NumberFieldSchemaImpl;
+import com.gentics.mesh.core.rest.schema.impl.S3BinaryFieldSchemaImpl;
+import com.gentics.mesh.core.rest.schema.impl.SchemaCreateRequest;
+import com.gentics.mesh.core.rest.schema.impl.SchemaModelImpl;
+import com.gentics.mesh.core.rest.schema.impl.StringFieldSchemaImpl;
 import com.gentics.mesh.util.Tuple;
 
 /**
@@ -26,7 +68,7 @@ public final class FieldUtil {
 
 	/**
 	 * Create a minimal valid test schema..
-	 * 
+	 *
 	 * @return
 	 */
 	public static SchemaCreateRequest createMinimalValidSchemaCreateRequest() {
@@ -45,7 +87,7 @@ public final class FieldUtil {
 
 	/**
 	 * Create a minimal valid test schema create request.
-	 * 
+	 *
 	 * @return
 	 */
 	public static SchemaCreateRequest createSchemaCreateRequest() {
@@ -57,7 +99,7 @@ public final class FieldUtil {
 
 	/**
 	 * Create a minimal valid test microschema.
-	 * 
+	 *
 	 * @return
 	 */
 	public static MicroschemaVersionModel createMinimalValidMicroschema() {
@@ -69,7 +111,7 @@ public final class FieldUtil {
 
 	/**
 	 * Create a minimal valid test microschema.
-	 * 
+	 *
 	 * @return
 	 */
 	public static MicroschemaUpdateRequest createMinimalValidMicroschemaUpdateRequest() {
@@ -81,7 +123,7 @@ public final class FieldUtil {
 
 	/**
 	 * Create minimal create request.
-	 * 
+	 *
 	 * @return
 	 */
 	public static MicroschemaCreateRequest createMinimalValidMicroschemaCreateRequest() {
@@ -93,7 +135,7 @@ public final class FieldUtil {
 
 	/**
 	 * Create a new string field schema.
-	 * 
+	 *
 	 * @param name
 	 *            Name of the field schema
 	 * @return
@@ -105,8 +147,21 @@ public final class FieldUtil {
 	}
 
 	/**
+	 * Create a new JSON object field schema.
+	 *
+	 * @param name
+	 *            Name of the field schema
+	 * @return
+	 */
+	public static JsonFieldSchema createJsonFieldSchema(String name) {
+		JsonFieldSchema fieldSchema = new JsonFieldSchemaImpl();
+		fieldSchema.setName(name);
+		return fieldSchema;
+	}
+
+	/**
 	 * Create a string field and set the given value.
-	 * 
+	 *
 	 * @param stringValue
 	 * @return
 	 */
@@ -116,12 +171,38 @@ public final class FieldUtil {
 		return field;
 	}
 
+	/**
+	 * Create a JSON object field and set the given value.
+	 *
+	 * @param stringValue
+	 * @return
+	 */
+	public static JsonField createJsonField(JsonNode jsonValue) {
+		JsonField field = new JsonFieldImpl();
+		field.setJson(jsonValue);
+		return field;
+	}
+
+	/**
+	 * Create a HTML field and set the given value.
+	 *
+	 * @param htmlValue
+	 * @return
+	 */
 	public static HtmlField createHtmlField(String htmlValue) {
 		HtmlField field = new HtmlFieldImpl();
 		field.setHTML(htmlValue);
 		return field;
 	}
 
+	/**
+	 * Create a binary field and set the given value.
+	 *
+	 * @param uuid target binary UUID
+	 * @param fileName 
+	 * @param hashSum
+	 * @return
+	 */
 	public static BinaryField createBinaryField(String uuid, String fileName, String hashSum) {
 		BinaryField field = new BinaryFieldImpl();
 		field.setBinaryUuid(uuid);
@@ -130,6 +211,12 @@ public final class FieldUtil {
 		return field;
 	}
 
+	/**
+	 * Create a S3 binary field and set the given value.
+	 *
+	 * @param fileName
+	 * @return
+	 */
 	public static S3BinaryField createS3BinaryField(String fileName) {
 		S3BinaryField field = new S3BinaryFieldImpl();
 		field.setFileName(fileName);
@@ -138,7 +225,7 @@ public final class FieldUtil {
 
 	/**
 	 * Create a number field and set the given value.
-	 * 
+	 *
 	 * @param numberValue
 	 * @return
 	 */
@@ -150,7 +237,7 @@ public final class FieldUtil {
 
 	/**
 	 * Create a boolean field and set the given value.
-	 * 
+	 *
 	 * @param value
 	 * @return
 	 */
@@ -160,6 +247,12 @@ public final class FieldUtil {
 		return field;
 	}
 
+	/**
+	 * Create a date field and set the given value.
+	 *
+	 * @param iso8601Date
+	 * @return
+	 */
 	public static DateField createDateField(String iso8601Date) {
 		DateField field = new DateFieldImpl();
 		field.setDate(iso8601Date);
@@ -168,7 +261,7 @@ public final class FieldUtil {
 
 	/**
 	 * Create a node field and set the uuid as node reference.
-	 * 
+	 *
 	 * @param uuid
 	 * @return
 	 */
@@ -255,14 +348,24 @@ public final class FieldUtil {
 	}
 
 	public static BinaryFieldSchema createBinaryFieldSchema(String name) {
+		return createBinaryFieldSchema(name, "");
+	}
+
+	public static BinaryFieldSchema createBinaryFieldSchema(String name, String checkServiceUrl) {
 		BinaryFieldSchema field = new BinaryFieldSchemaImpl();
 		field.setName(name);
+		field.setCheckServiceUrl(checkServiceUrl);
 		return field;
 	}
 
 	public static S3BinaryFieldSchema createS3BinaryFieldSchema(String name) {
+		return createS3BinaryFieldSchema(name, "");
+	}
+
+	public static S3BinaryFieldSchema createS3BinaryFieldSchema(String name, String checkServiceUrl) {
 		S3BinaryFieldSchema field = new S3BinaryFieldSchemaImpl();
 		field.setName(name);
+		field.setCheckServiceUrl(checkServiceUrl);
 		return field;
 	}
 

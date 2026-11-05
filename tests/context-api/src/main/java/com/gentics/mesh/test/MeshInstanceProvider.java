@@ -1,5 +1,7 @@
 package com.gentics.mesh.test;
 
+import java.util.List;
+
 import org.testcontainers.utility.ThrowingFunction;
 
 import com.gentics.mesh.core.db.Database;
@@ -74,11 +76,35 @@ public interface MeshInstanceProvider<T extends MeshOptions> extends MeshOptions
 	/**
 	 * Performs the fast storage cleanup, e.g. in place data drop with keeping the schemas, if available.
 	 * 
-	 * @param db the database to clean up
+	 * @param dbs list of databases to clean up
 	 * @return true if the fast cleanup is available and succeeded.
 	 * @throws Exception
 	 */
-	default boolean fastStorageCleanup(Database db) throws Exception {
+	default boolean fastStorageCleanup(List<Database> dbs) throws Exception {
 		return false;
+	}
+
+	/**
+	 * Get the database specific allowed minimum value for double
+	 * @return minimum value
+	 */
+	default Double getMinAllowedDouble() {
+		return Double.MIN_VALUE;
+	}
+
+	/**
+	 * Get the database specific allowed maximum value for double
+	 * @return maximum value
+	 */
+	default Double getMaxAllowedDouble() {
+		return Double.MAX_VALUE;
+	}
+
+	/**
+	 * Return true, when the database is case sensitive (regarding the stored values)
+	 * @return true for case sensitive
+	 */
+	default boolean isCaseSensitive() {
+		return true;
 	}
 }

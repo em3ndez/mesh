@@ -1,8 +1,13 @@
 package com.gentics.mesh.search.index.tagfamily;
 
+import static com.gentics.mesh.util.PreparationUtil.prepareData;
+
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -14,15 +19,23 @@ import java.util.stream.Stream;
 import javax.inject.Inject;
 import javax.inject.Singleton;
 
+import org.apache.commons.lang3.tuple.Pair;
+
 import com.gentics.mesh.context.InternalActionContext;
+import com.gentics.mesh.core.data.Bucket;
 import com.gentics.mesh.core.data.dao.ProjectDao;
+import com.gentics.mesh.core.data.dao.RoleDao;
+import com.gentics.mesh.core.data.dao.TagFamilyDao;
+import com.gentics.mesh.core.data.perm.InternalPermission;
 import com.gentics.mesh.core.data.project.HibProject;
+import com.gentics.mesh.core.data.search.Compliance;
 import com.gentics.mesh.core.data.search.index.IndexInfo;
 import com.gentics.mesh.core.data.search.request.SearchRequest;
 import com.gentics.mesh.core.data.tagfamily.HibTagFamily;
 import com.gentics.mesh.core.db.Database;
 import com.gentics.mesh.core.db.Tx;
 import com.gentics.mesh.etc.config.MeshOptions;
+import com.gentics.mesh.handler.DataHolderContext;
 import com.gentics.mesh.search.SearchProvider;
 import com.gentics.mesh.search.index.BucketManager;
 import com.gentics.mesh.search.index.entry.AbstractIndexHandler;
@@ -37,16 +50,16 @@ import io.reactivex.Flowable;
 @Singleton
 public class TagFamilyIndexHandlerImpl extends AbstractIndexHandler<HibTagFamily> implements TagFamilyIndexHandler {
 
-	@Inject
-	TagFamilyTransformer transformer;
+	protected final TagFamilyTransformer transformer;
+
+	protected final TagFamilyMappingProvider mappingProvider;
 
 	@Inject
-	TagFamilyMappingProvider mappingProvider;
-
-	@Inject
-	public TagFamilyIndexHandlerImpl(SearchProvider searchProvider, Database db, MeshHelper helper, MeshOptions options,
-		SyncMetersFactory syncMetricsFactory, BucketManager bucketManager) {
-		super(searchProvider, db, helper, options, syncMetricsFactory, bucketManager);
+	public TagFamilyIndexHandlerImpl(SearchProvider searchProvider, Database db, MeshHelper helper, MeshOptions options, Compliance compliance,
+		SyncMetersFactory syncMetricsFactory, BucketManager bucketManager, TagFamilyTransformer transformer, TagFamilyMappingProvider mappingProvider) {
+		super(searchProvider, db, helper, options, syncMetricsFactory, bucketManager, compliance);
+		this.transformer = transformer;
+		this.mappingProvider = mappingProvider;
 	}
 
 	@Override
@@ -77,13 +90,13 @@ public class TagFamilyIndexHandlerImpl extends AbstractIndexHandler<HibTagFamily
 	}
 
 	@Override
-	public Map<String, IndexInfo> getIndices() {
+	public Map<String, Optional<IndexInfo>> getIndices() {
 		return db.tx(tx -> {
-			Map<String, IndexInfo> indexInfo = new HashMap<>();
+			Map<String, Optional<IndexInfo>> indexInfo = new HashMap<>();
 			for (HibProject project : tx.projectDao().findAll()) {
 				String indexName = HibTagFamily.composeIndexName(project.getUuid());
 				IndexInfo info = new IndexInfo(indexName, null, getMappingProvider().getMapping(), "tagFamily");
-				indexInfo.put(indexName, info);
+				indexInfo.put(indexName, Optional.of(info));
 			}
 			return indexInfo;
 		});
@@ -135,8 +148,27 @@ public class TagFamilyIndexHandlerImpl extends AbstractIndexHandler<HibTagFamily
 	}
 
 	@Override
-	public Stream<? extends HibTagFamily> loadAllElements() {
-		return Tx.get().tagFamilyDao().findAll().stream();
+	public Function<Collection<String>, Stream<Pair<String, HibTagFamily>>> elementsLoader() {
+		return (uuids) -> Tx.get().tagFamilyDao().findByUuids(uuids);
 	}
 
+	@Override
+	public Collection<? extends HibTagFamily> loadAllElements(Bucket bucket, DataHolderContext dhc) {
+		TagFamilyDao tagFamilyDao = Tx.get().tagFamilyDao();
+		RoleDao roleDao = Tx.get().roleDao();
+
+		List<HibTagFamily> tagFamiliesInBucket = new ArrayList<>(tagFamilyDao.findAll(bucket).list());
+
+		prepareData(tagFamiliesInBucket, dhc, "tagFamily", "tags", tagFamilyDao::getTags);
+		prepareData(tagFamiliesInBucket, dhc, "tagFamily", "permissions",
+				elements -> roleDao.getRoleUuidsForPerm(elements, InternalPermission.READ_PERM));
+
+		return tagFamiliesInBucket;
+	}
+
+	@Override
+	public boolean isDefinitionDataDependent() {
+		// We depend on the project.
+		return true;
+	}
 }

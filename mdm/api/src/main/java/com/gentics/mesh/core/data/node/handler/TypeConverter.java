@@ -19,6 +19,10 @@ import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import com.fasterxml.jackson.databind.JsonNode;
 import com.gentics.mesh.core.rest.node.field.ListField;
 import com.gentics.mesh.core.rest.node.field.MicronodeField;
 import com.gentics.mesh.core.rest.node.field.NodeField;
@@ -31,14 +35,13 @@ import com.gentics.mesh.core.rest.node.field.list.impl.AbstractFieldList;
 import com.gentics.mesh.core.rest.node.field.list.impl.BooleanFieldListImpl;
 import com.gentics.mesh.core.rest.node.field.list.impl.DateFieldListImpl;
 import com.gentics.mesh.core.rest.node.field.list.impl.HtmlFieldListImpl;
+import com.gentics.mesh.core.rest.node.field.list.impl.JsonFieldListImpl;
 import com.gentics.mesh.core.rest.node.field.list.impl.MicronodeFieldListImpl;
 import com.gentics.mesh.core.rest.node.field.list.impl.NodeFieldListImpl;
 import com.gentics.mesh.core.rest.node.field.list.impl.NodeFieldListItemImpl;
 import com.gentics.mesh.core.rest.node.field.list.impl.NumberFieldListImpl;
 import com.gentics.mesh.core.rest.node.field.list.impl.StringFieldListImpl;
-
-import io.vertx.core.logging.Logger;
-import io.vertx.core.logging.LoggerFactory;
+import com.gentics.mesh.json.JsonUtil;
 
 /**
  * Type converter for the script engine used by the node migration handler.
@@ -85,6 +88,17 @@ public class TypeConverter {
 	}
 
 	/**
+	 * Convert the given value to a JSON list
+	 *
+	 * @param value
+	 *            Value to be converted
+	 * @return JSON list
+	 */
+	public JsonFieldListImpl toJsonList(Object value) {
+		return listField(JsonFieldListImpl::new, this::toJsonNode, value);
+	}
+
+	/**
 	 * Convert the given value to an HTML list
 	 *
 	 * @param value
@@ -116,6 +130,29 @@ public class TypeConverter {
 		} else {
 			return null;
 		}
+	}
+
+	/**
+	 * Convert the given value to a JSON node.
+	 *
+	 * @param value
+	 *            Value to be converted
+	 * @return JSON node value
+	 */
+	public JsonNode toJsonNode(Object value) {
+		value = firstIfList(value);
+
+		if (value == null) {
+			return null;
+		}
+		try {
+			return JsonUtil.getMapper().readTree(value.toString());
+		} catch (Exception e) {
+			if (log.isDebugEnabled()) {
+				log.debug("Could not convert to JsonObject {" + value.toString() + "}", e);
+			}
+		}
+		return null;
 	}
 
 	/**

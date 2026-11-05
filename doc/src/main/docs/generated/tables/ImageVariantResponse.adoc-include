@@ -1,0 +1,60 @@
+[options="header",cols="10%,10%,10%,70%"]
+|======
+
+| Property
+| Mandatory 
+| Type
+| Description
+
+
+| auto
+| no
+| boolean
+| This flag states that this variant is a proportional (aka &#x27;auto&#x27;) image.  Default: *false*.
+
+| cropMode
+| no
+| string
+| The image crop mode.
+
+| fileSize
+| no
+| integer
+| The image file size.
+
+| focalPoint
+| no
+| object
+| The image focal point, containing factors of the image width/height. The value 0.5 is the center of the image.
+
+| focalZoom
+| no
+| number
+| The image focal point zoom factor.
+
+| height
+| no
+| integer
+| Image height.
+
+| origin
+| no
+| boolean
+| This flag states that this variant is an original image.  Default: *false*.
+
+| rect
+| no
+| object
+| Image crop parameters.
+
+| resizeMode
+| no
+| string
+| The image resize mode.
+
+| width
+| no
+| integer
+| Image width.
+
+|======

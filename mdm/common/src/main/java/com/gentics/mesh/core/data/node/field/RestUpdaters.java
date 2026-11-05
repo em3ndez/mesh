@@ -6,12 +6,19 @@ import static io.netty.handler.codec.http.HttpResponseStatus.BAD_REQUEST;
 import static org.apache.commons.lang3.StringUtils.isEmpty;
 
 import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
+import org.apache.commons.collections.CollectionUtils;
 import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.gentics.mesh.core.data.HibField;
 import com.gentics.mesh.core.data.binary.HibBinary;
 import com.gentics.mesh.core.data.dao.MicroschemaDao;
@@ -21,6 +28,7 @@ import com.gentics.mesh.core.data.node.HibNode;
 import com.gentics.mesh.core.data.node.field.list.HibBooleanFieldList;
 import com.gentics.mesh.core.data.node.field.list.HibDateFieldList;
 import com.gentics.mesh.core.data.node.field.list.HibHtmlFieldList;
+import com.gentics.mesh.core.data.node.field.list.HibJsonFieldList;
 import com.gentics.mesh.core.data.node.field.list.HibMicronodeFieldList;
 import com.gentics.mesh.core.data.node.field.list.HibNodeFieldList;
 import com.gentics.mesh.core.data.node.field.list.HibNumberFieldList;
@@ -32,10 +40,12 @@ import com.gentics.mesh.core.data.s3binary.S3HibBinary;
 import com.gentics.mesh.core.data.s3binary.S3HibBinaryField;
 import com.gentics.mesh.core.data.schema.HibMicroschemaVersion;
 import com.gentics.mesh.core.db.Tx;
+import com.gentics.mesh.core.rest.node.field.BinaryCheckStatus;
 import com.gentics.mesh.core.rest.node.field.BinaryField;
 import com.gentics.mesh.core.rest.node.field.BooleanField;
 import com.gentics.mesh.core.rest.node.field.DateField;
 import com.gentics.mesh.core.rest.node.field.HtmlField;
+import com.gentics.mesh.core.rest.node.field.JsonField;
 import com.gentics.mesh.core.rest.node.field.MicronodeField;
 import com.gentics.mesh.core.rest.node.field.NodeField;
 import com.gentics.mesh.core.rest.node.field.NodeFieldListItem;
@@ -51,17 +61,20 @@ import com.gentics.mesh.core.rest.node.field.list.NodeFieldList;
 import com.gentics.mesh.core.rest.node.field.list.impl.BooleanFieldListImpl;
 import com.gentics.mesh.core.rest.node.field.list.impl.DateFieldListImpl;
 import com.gentics.mesh.core.rest.node.field.list.impl.HtmlFieldListImpl;
+import com.gentics.mesh.core.rest.node.field.list.impl.JsonFieldListImpl;
 import com.gentics.mesh.core.rest.node.field.list.impl.NumberFieldListImpl;
 import com.gentics.mesh.core.rest.node.field.list.impl.StringFieldListImpl;
 import com.gentics.mesh.core.rest.node.field.s3binary.S3BinaryMetadata;
+import com.gentics.mesh.core.rest.schema.BinaryFieldSchema;
+import com.gentics.mesh.core.rest.schema.JsonFieldSchema;
 import com.gentics.mesh.core.rest.schema.ListFieldSchema;
 import com.gentics.mesh.core.rest.schema.MicronodeFieldSchema;
 import com.gentics.mesh.core.rest.schema.MicroschemaReference;
 import com.gentics.mesh.core.rest.schema.NodeFieldSchema;
+import com.gentics.mesh.core.rest.schema.S3BinaryFieldSchema;
 import com.gentics.mesh.core.rest.schema.StringFieldSchema;
-
-import io.vertx.core.logging.Logger;
-import io.vertx.core.logging.LoggerFactory;
+import com.gentics.mesh.json.JsonUtil;
+import com.gentics.mesh.util.DateUtils;
 
 public class RestUpdaters {
 
@@ -89,6 +102,9 @@ public class RestUpdaters {
 		if (restIsNullOrEmpty) {
 			return;
 		}
+
+		// check value length
+		checkStringLength(stringField.getString(), fieldKey);
 
 		// check value restrictions
 		StringFieldSchema stringFieldSchema = (StringFieldSchema) fieldSchema;
@@ -130,6 +146,9 @@ public class RestUpdaters {
 			return;
 		}
 
+		// check string lengths
+		checkStringsLength(stringList.getItems(), fieldKey);
+
 		// Always create a new list.
 		// This will effectively unlink the old list and create a new one.
 		// Otherwise the list which is linked to old versions would be updated.
@@ -141,8 +160,8 @@ public class RestUpdaters {
 			if (item == null) {
 				throw error(BAD_REQUEST, "field_list_error_null_not_allowed", fieldKey);
 			}
-			graphStringList.createString(item);
 		}
+		graphStringList.createStrings(stringList.getItems());
 	};
 
 	public static FieldUpdater NUMBER_UPDATER = (container, ac, fieldMap, fieldKey, fieldSchema, schema) -> {
@@ -211,9 +230,8 @@ public class RestUpdaters {
 			if (item == null) {
 				throw error(BAD_REQUEST, "field_list_error_null_not_allowed", fieldKey);
 			}
-			graphNumberFieldList.createNumber(item);
 		}
-
+		graphNumberFieldList.createNumbers(numberList.getItems());
 	};
 
 	public static FieldUpdater DATE_UPDATER = (container, ac, fieldMap, fieldKey, fieldSchema, schema) -> {
@@ -281,9 +299,8 @@ public class RestUpdaters {
 			if (item == null) {
 				throw error(BAD_REQUEST, "field_list_error_null_not_allowed", fieldKey);
 			}
-			graphDateFieldList.createDate(fromISO8601(item));
 		}
-
+		graphDateFieldList.createDates(dateList.getItems().stream().map(DateUtils::fromISO8601).collect(Collectors.toList()));
 	};
 
 	public static FieldUpdater BOOLEAN_UPDATER = (container, ac, fieldMap, fieldKey, fieldSchema, schema) -> {
@@ -352,9 +369,93 @@ public class RestUpdaters {
 			if (item == null) {
 				throw error(BAD_REQUEST, "field_list_error_null_not_allowed", fieldKey);
 			}
-			graphBooleanFieldList.createBoolean(item);
+		}
+		graphBooleanFieldList.createBooleans(booleanList.getItems());
+	};
+
+	public static FieldUpdater JSON_UPDATER = (container, ac, fieldMap, fieldKey, fieldSchema, schema) -> {
+		JsonField jsonField = fieldMap.getJsonField(fieldKey);
+		HibJsonField jsonSqlField = container.getJson(fieldKey);
+		boolean isJsonFieldSetToNull = fieldMap.hasField(fieldKey) && (jsonField == null || jsonField.getJson() == null);
+		HibField.failOnDeletionOfRequiredField(jsonSqlField, isJsonFieldSetToNull, fieldSchema, fieldKey, schema);
+		boolean isJsonFieldNull = jsonField == null || jsonField.getJson() == null;
+
+		// Skip this check for no migrations
+		if (!ac.isMigrationContext()) {
+			HibField.failOnMissingRequiredField(jsonSqlField, isJsonFieldNull, fieldSchema, fieldKey, schema);
 		}
 
+		// Handle Deletion - The field was explicitly set to null and is currently set within the graph thus we must remove it.
+		if (isJsonFieldSetToNull && jsonSqlField != null) {
+			container.removeField(jsonSqlField);
+			return;
+		}
+
+		// Rest model is empty or null - Abort
+		if (isJsonFieldNull) {
+			return;
+		}
+
+		// check value length
+		checkStringLength(JsonUtil.toJson(jsonField.getJson()), fieldKey);
+
+		// check value restrictions
+		JsonFieldSchema jsonFieldSchema = (JsonFieldSchema) fieldSchema;
+		JsonNode[] allowedSchemas = jsonFieldSchema.getAllowedSchemas();
+		if (allowedSchemas != null && allowedSchemas.length != 0) {
+			JsonNode jsonNode = jsonField.getJson();
+			if (jsonNode != null && Arrays.asList(allowedSchemas).stream()
+					.noneMatch(schema1 -> JsonUtil.validate(schema1, jsonNode) == Boolean.TRUE)) {
+				throw error(BAD_REQUEST, "node_error_invalid_json_field_value", fieldKey, JsonUtil.toJson(jsonNode));
+			}
+		}
+
+		// Handle Update / Create - Create new graph field if no existing one could be found
+		if (jsonSqlField == null) {
+			container.createJson(fieldKey).setJson(jsonField.getJson());
+		} else {
+			jsonSqlField.setJson(jsonField.getJson());
+		}
+	};
+
+	public static FieldUpdater JSON_LIST_UPDATER = (container, ac, fieldMap, fieldKey, fieldSchema, schema) -> {
+		HibJsonFieldList graphJsonFieldList = container.getJsonList(fieldKey);
+		JsonFieldListImpl jsonList = fieldMap.getJsonFieldList(fieldKey);
+		boolean isJsonListFieldSetToNull = fieldMap.hasField(fieldKey) && jsonList == null;
+		HibField.failOnDeletionOfRequiredField(graphJsonFieldList, isJsonListFieldSetToNull, fieldSchema, fieldKey, schema);
+		boolean restIsNull = jsonList == null;
+
+		// Skip this check for no migrations
+		if (!ac.isMigrationContext()) {
+			HibField.failOnMissingRequiredField(graphJsonFieldList, jsonList == null, fieldSchema, fieldKey, schema);
+		}
+
+		// Handle Deletion
+		if (isJsonListFieldSetToNull && graphJsonFieldList != null) {
+			container.removeField(graphJsonFieldList);
+			return;
+		}
+
+		// Rest model is empty or null - Abort
+		if (restIsNull) {
+			return;
+		}
+
+		// check strings length
+		checkStringsLength(jsonList.getItems(), fieldKey, JsonUtil::toJson);
+
+		// Always create a new list.
+		// This will effectively unlink the old list and create a new one.
+		// Otherwise the list which is linked to old versions would be updated.
+		graphJsonFieldList = container.createJsonList(fieldKey);
+
+		// Add items from rest model
+		for (JsonNode item : jsonList.getItems()) {
+			if (item == null || item.isNull()) {
+				throw error(BAD_REQUEST, "field_list_error_null_not_allowed", fieldKey);
+			}
+		}
+		graphJsonFieldList.createJsons(jsonList.getItems());
 	};
 
 	public static FieldUpdater HTML_UPDATER = (container, ac, fieldMap, fieldKey, fieldSchema, schema) -> {
@@ -379,6 +480,9 @@ public class RestUpdaters {
 		if (isHtmlFieldNull) {
 			return;
 		}
+
+		// check value length
+		checkStringLength(htmlField.getHTML(), fieldKey);
 
 		// Handle Update / Create - Create new graph field if no existing one could be found
 		if (htmlGraphField == null) {
@@ -411,6 +515,9 @@ public class RestUpdaters {
 			return;
 		}
 
+		// check strings length
+		checkStringsLength(htmlList.getItems(), fieldKey);
+
 		// Always create a new list.
 		// This will effectively unlink the old list and create a new one.
 		// Otherwise the list which is linked to old versions would be updated.
@@ -421,8 +528,8 @@ public class RestUpdaters {
 			if (item == null) {
 				throw error(BAD_REQUEST, "field_list_error_null_not_allowed", fieldKey);
 			}
-			graphHtmlFieldList.createHTML(item);
 		}
+		graphHtmlFieldList.createHTMLs(htmlList.getItems());
 	};
 
 	public static FieldUpdater MICRONODE_UPDATER = (container, ac, fieldMap, fieldKey, fieldSchema, schema) -> {
@@ -464,9 +571,7 @@ public class RestUpdaters {
 		// check whether microschema is allowed
 		if (!ArrayUtils.isEmpty(microschemaFieldSchema.getAllowedMicroSchemas())
 				&& !Arrays.asList(microschemaFieldSchema.getAllowedMicroSchemas()).contains(microschemaVersion.getName())) {
-			log.error("Node update not allowed since the microschema {" + microschemaVersion.getName()
-					+ "} is now allowed. Allowed microschemas {" + Arrays.toString(microschemaFieldSchema.getAllowedMicroSchemas()) + "}");
-			throw error(BAD_REQUEST, "node_error_invalid_microschema_field_value", fieldKey, microschemaVersion.getName());
+			throw error(BAD_REQUEST, "node_error_invalid_microschema_field_value", fieldKey, microschemaVersion.getName(), Arrays.toString(microschemaFieldSchema.getAllowedMicroSchemas()));
 		}
 
 		// Always create a new micronode field since each update must create a new field instance. The old field must be detached from the given container.
@@ -559,9 +664,7 @@ public class RestUpdaters {
 
 			if (!org.apache.commons.lang.ArrayUtils.isEmpty(nodeFieldSchema.getAllowedSchemas())
 					&& !Arrays.asList(nodeFieldSchema.getAllowedSchemas()).contains(schemaName)) {
-				log.error("Node update not allowed since the schema {" + schemaName
-						+ "} is not allowed. Allowed schemas {" + Arrays.toString(nodeFieldSchema.getAllowedSchemas()) + "}");
-				throw error(BAD_REQUEST, "node_error_invalid_schema_field_value", fieldKey, schemaName);
+				throw error(BAD_REQUEST, "node_error_invalid_schema_field_value", fieldKey, schemaName, Arrays.toString(nodeFieldSchema.getAllowedSchemas()));
 			}
 
 			// The old node edge is deleted on a new edge creation.
@@ -619,17 +722,19 @@ public class RestUpdaters {
 
 			if (!org.apache.commons.lang.ArrayUtils.isEmpty(listFieldSchema.getAllowedSchemas())
 					&& !Arrays.asList(listFieldSchema.getAllowedSchemas()).contains(schemaName)) {
-				log.error("Node update not allowed since the schema {" + schemaName
-						+ "} is not allowed. Allowed schemas {" + Arrays.toString(listFieldSchema.getAllowedSchemas()) + "}");
-				throw error(BAD_REQUEST, "node_error_invalid_schema_field_value", fieldKey, schemaName);
+				throw error(BAD_REQUEST, "node_error_invalid_schema_field_value", fieldKey, schemaName, Arrays.toString(listFieldSchema.getAllowedSchemas()));
 			}
 			int pos = integer.getAndIncrement();
 			if (log.isDebugEnabled()) {
 				log.debug("Adding item {" + item.getUuid() + "} at position {" + pos + "}");
 			}
-			graphNodeFieldList.addItem(graphNodeFieldList.createNode(pos, node));
+			HibNodeField nodeItem = graphNodeFieldList.createNode(pos, node);
+			if (nodeItem != null) {
+				graphNodeFieldList.addItem(nodeItem);
+			} else {
+				log.warn("The referenced node {" + item.getUuid() + "} does not exist for the field {" + fieldKey + "} of schema {" + schema.getName() + "}");
+			}
 		}
-
 	};
 
 	public static FieldUpdater BINARY_UPDATER = (container, ac, fieldMap, fieldKey, fieldSchema, schema) -> {
@@ -726,6 +831,13 @@ public class RestUpdaters {
 			graphBinaryField.setPlainText(text);
 		}
 
+		if (graphBinaryField != null && graphBinaryField.getBinary() != null) {
+			if (StringUtils.isBlank(((BinaryFieldSchema) fieldSchema).getCheckServiceUrl())) {
+				graphBinaryField.getBinary().setCheckStatus(BinaryCheckStatus.ACCEPTED);
+			} else {
+				graphBinaryField.getBinary().setCheckStatus(BinaryCheckStatus.POSTPONED);
+			}
+		}
 		// Don't update image width, height, SHA checksum - those are immutable
 	};
 
@@ -829,7 +941,51 @@ public class RestUpdaters {
 			graphS3BinaryField.setS3ObjectKey(key);
 		}
 
-
+		if (graphS3BinaryField != null && graphS3BinaryField.getBinary() != null) {
+			if (StringUtils.isBlank(((S3BinaryFieldSchema) fieldSchema).getCheckServiceUrl())) {
+				graphS3BinaryField.getBinary().setCheckStatus(BinaryCheckStatus.ACCEPTED);
+			} else {
+				graphS3BinaryField.getBinary().setCheckStatus(BinaryCheckStatus.POSTPONED);
+			}
+		}
 		// Don't update image width, height, SHA checksum - those are immutable
 	};
+
+	/**
+	 * Check whether the given string is within the allowed length bounds. If not, throw an error
+	 * @param string string content
+	 * @param fieldKey field key
+	 */
+	private static void checkStringLength(String string, String fieldKey) {
+		if (StringUtils.isEmpty(string)) {
+			return;
+		}
+		int stringLengthLimit = Tx.get().contentDao().getStringLengthLimit();
+
+		if (string.length() > stringLengthLimit) {
+			throw error(BAD_REQUEST, "node_error_string_field_value_too_long", fieldKey,
+					String.valueOf(stringLengthLimit), String.valueOf(string.length()));
+		}
+	}
+
+	/**
+	 * Check whether all the given strings are within the allowed length bounds. If not, throw an error
+	 * @param strings string contents
+	 * @param fieldKey field key
+	 */
+	private static void checkStringsLength(List<String> strings, String fieldKey) {
+		checkStringsLength(strings, fieldKey, Function.identity());
+	}
+
+	/**
+	 * Check whether all the given strings are within the allowed length bounds. If not, throw an error
+	 * @param list string contents
+	 * @param fieldKey field key
+	 */
+	private static <T> void checkStringsLength(List<T> list, String fieldKey, Function<T, String> toString) {
+		if (CollectionUtils.isEmpty(list)) {
+			return;
+		}
+		list.forEach(item -> checkStringLength(toString.apply(item), fieldKey));
+	}
 }

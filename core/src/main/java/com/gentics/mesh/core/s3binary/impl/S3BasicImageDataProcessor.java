@@ -7,14 +7,15 @@ import javax.inject.Singleton;
 
 import com.gentics.mesh.core.data.s3binary.S3HibBinary;
 import com.gentics.mesh.core.data.s3binary.S3HibBinaryField;
+import com.gentics.mesh.core.data.storage.S3BinaryStorage;
 import com.gentics.mesh.core.image.ImageManipulator;
 import com.gentics.mesh.core.s3binary.S3BinaryDataProcessor;
 import com.gentics.mesh.core.s3binary.S3BinaryDataProcessorContext;
 import com.gentics.mesh.util.NodeUtil;
 
 import io.reactivex.Maybe;
-import io.vertx.core.logging.Logger;
-import io.vertx.core.logging.LoggerFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import io.vertx.ext.web.FileUpload;
 
 /**
@@ -42,7 +43,7 @@ public class S3BasicImageDataProcessor implements S3BinaryDataProcessor {
 		FileUpload upload = ctx.getUpload();
 		return imageManipulator.readImageInfo(upload.uploadedFileName()).map(info -> {
 			Consumer<S3HibBinaryField> consumer = field -> {
-				log.info("Setting info to binary field " + field.getFieldKey() + " - " + info);
+				log.debug("Setting info to binary field " + S3BinaryStorage.makeObjectKey(ctx.getNodeUuid(), ctx.getFieldName(), ctx.getLanguageTag()) + " - " + info);
 				field.setImageDominantColor(info.getDominantColor());
 				S3HibBinary binary = field.getBinary();
 				binary.setImageHeight(info.getHeight());
@@ -50,9 +51,7 @@ public class S3BasicImageDataProcessor implements S3BinaryDataProcessor {
 			};
 			return consumer;
 		}).doOnError(e -> {
-			if (log.isDebugEnabled()) {
-				log.warn("Could not read image information from upload {" + upload.fileName() + "/" + upload.name() + "}", e);
-			}
+			log.warn("Could not read image information from upload {" + upload.fileName() + "/" + upload.name() + "}", e);
 		}).toMaybe().onErrorComplete();
 
 	}

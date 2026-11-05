@@ -10,6 +10,7 @@ import static graphql.schema.GraphQLFieldDefinition.newFieldDefinition;
 import static graphql.schema.GraphQLObjectType.newObject;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.stream.Stream;
 
 import javax.inject.Inject;
@@ -70,7 +71,7 @@ public class TagTypeProvider extends AbstractTypeProvider {
 		// .nodes
 		tagType.field(newFieldDefinition().name("nodes").description("Nodes which are tagged with the tag.")
 				.type(new GraphQLTypeReference(NODE_PAGE_TYPE_NAME))
-				.argument(createPagingArgs())
+				.argument(createPagingArgs(false))
 				.argument(createLanguageTagArg(true))
 				.argument(createNodeVersionArg())
 				.dataFetcher((env) -> {
@@ -87,9 +88,9 @@ public class TagTypeProvider extends AbstractTypeProvider {
 						.map(node -> new NodeContent(node, contentDao.findVersion(node, gc, languageTags, type), languageTags, type))
 						// Filter nodes without a container
 						.filter(content -> content.getContainer() != null)
-						.filter(gc::hasReadPerm);
+						.filter(content1 -> gc.hasReadPerm(content1, type));
 
-					return applyNodeFilter(env, contents);
+					return applyNodeFilter(env, contents, false, false, Optional.empty());
 
 				}));
 

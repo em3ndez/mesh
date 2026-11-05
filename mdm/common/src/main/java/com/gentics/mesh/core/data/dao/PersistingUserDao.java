@@ -8,34 +8,46 @@ import static com.gentics.mesh.core.data.perm.InternalPermission.READ_PUBLISHED_
 import static com.gentics.mesh.core.data.perm.InternalPermission.UPDATE_PERM;
 import static com.gentics.mesh.core.rest.error.Errors.conflict;
 import static com.gentics.mesh.core.rest.error.Errors.error;
+import static com.gentics.mesh.util.PreparationUtil.getPreparedData;
+import static com.gentics.mesh.util.PreparationUtil.prepareData;
+import static com.gentics.mesh.util.PreparationUtil.preparePermissions;
 import static io.netty.handler.codec.http.HttpResponseStatus.BAD_REQUEST;
 import static io.netty.handler.codec.http.HttpResponseStatus.FORBIDDEN;
-import static org.apache.commons.lang3.StringUtils.isEmpty;
+import static org.apache.commons.lang3.StringUtils.isBlank;
 
 import java.util.Collection;
 import java.util.EnumSet;
+import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
-import java.util.stream.StreamSupport;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import com.gentics.mesh.cache.NameCache;
 import com.gentics.mesh.cache.PermissionCache;
 import com.gentics.mesh.context.BulkActionContext;
 import com.gentics.mesh.context.InternalActionContext;
-import com.gentics.mesh.context.impl.DummyEventQueueBatch;
 import com.gentics.mesh.core.data.HibBaseElement;
+import com.gentics.mesh.core.data.HibCoreElement;
 import com.gentics.mesh.core.data.HibNodeFieldContainer;
+import com.gentics.mesh.core.data.HibNodeFieldContainerEdge;
 import com.gentics.mesh.core.data.NodeMigrationUser;
 import com.gentics.mesh.core.data.group.HibGroup;
 import com.gentics.mesh.core.data.node.HibNode;
+import com.gentics.mesh.core.data.page.Page;
 import com.gentics.mesh.core.data.perm.InternalPermission;
 import com.gentics.mesh.core.data.project.HibProject;
 import com.gentics.mesh.core.data.role.HibRole;
 import com.gentics.mesh.core.data.user.HibUser;
+import com.gentics.mesh.core.db.CommonTx;
 import com.gentics.mesh.core.db.Tx;
 import com.gentics.mesh.core.rest.common.ContainerType;
 import com.gentics.mesh.core.rest.common.PermissionInfo;
+import com.gentics.mesh.core.rest.common.RestModel;
 import com.gentics.mesh.core.rest.group.GroupReference;
 import com.gentics.mesh.core.rest.node.NodeResponse;
 import com.gentics.mesh.core.rest.project.ProjectReference;
@@ -50,16 +62,13 @@ import com.gentics.mesh.parameter.GenericParameters;
 import com.gentics.mesh.parameter.NodeParameters;
 import com.gentics.mesh.parameter.value.FieldsSet;
 
-import io.vertx.core.logging.Logger;
-import io.vertx.core.logging.LoggerFactory;
-
 /**
  * A persisting extension to {@link UserDao}
  * 
  * @author plyhun
  *
  */
-public interface PersistingUserDao extends UserDao, PersistingDaoGlobal<HibUser> {
+public interface PersistingUserDao extends UserDao, PersistingDaoGlobal<HibUser>, PersistingNamedEntityDao<HibUser> {
 
 	Logger log = LoggerFactory.getLogger(PersistingUserDao.class);
 
@@ -88,31 +97,30 @@ public interface PersistingUserDao extends UserDao, PersistingDaoGlobal<HibUser>
 	@Override
 	default boolean hasPermissionForId(HibUser user, Object elementId, InternalPermission permission) {
 		PermissionCache permissionCache = Tx.get().permissionCache();
-		Boolean cached = permissionCache.hasPermission(user.getId(), permission, elementId);
-		if (cached != null) {
-			if (!cached && permission == READ_PUBLISHED_PERM) {
-				return hasPermissionForId(user, elementId, READ_PERM);
-			}
-
-			return cached.booleanValue();
+		// Admin users have all permissions
+		if (user.isAdmin()) {
+			permissionCache.store(user.getId(), EnumSet.allOf(InternalPermission.class), elementId);
+			return true;
 		} else {
-			// Admin users have all permissions
-			if (user.isAdmin()) {
-				permissionCache.store(user.getId(), EnumSet.allOf(InternalPermission.class), elementId);
-				return true;
-			}
-
-			EnumSet<InternalPermission> permissions = getPermissionsForElementId(user, elementId);
-			permissionCache.store(user.getId(), permissions, elementId);
-			if (permissions.contains(permission)) {
-				return true;
-			}
-
-			// Fall back to read and check whether the user has read perm. Read permission also includes read published.
-			if (permission == READ_PUBLISHED_PERM) {
-				return hasPermissionForId(user, elementId, READ_PERM);
+			Boolean cached = permissionCache.hasPermission(user.getId(), permission, elementId);
+			if (cached != null) {
+				if (!cached && permission == READ_PUBLISHED_PERM) {
+					return hasPermissionForId(user, elementId, READ_PERM);
+				}
+				return cached.booleanValue();
 			} else {
-				return false;
+				EnumSet<InternalPermission> permissions = getPermissionsForElementId(user, elementId);
+				permissionCache.store(user.getId(), permissions, elementId);
+				if (permissions.contains(permission)) {
+					return true;
+				}
+
+				// Fall back to read and check whether the user has read perm. Read permission also includes read published.
+				if (permission == READ_PUBLISHED_PERM) {
+					return hasPermissionForId(user, elementId, READ_PERM);
+				} else {
+					return false;
+				}
 			}
 		}
 	}
@@ -154,7 +162,11 @@ public interface PersistingUserDao extends UserDao, PersistingDaoGlobal<HibUser>
 	 * @param creator
 	 * @return
 	 */
-	default HibUser init(HibUser user, String username, HibUser creator) {
+	private HibUser init(HibUser user, String username, HibUser creator) {
+		HibUser conflicting = findByUsername(username);
+		if (conflicting != null && !conflicting.getUuid().equals(user.getUuid())) {
+			throw conflict(conflicting.getUuid(), username, "user_conflicting_username");
+		}
 		user.setUsername(username);
 		user.enable();
 		user.generateBucketId();
@@ -180,8 +192,11 @@ public interface PersistingUserDao extends UserDao, PersistingDaoGlobal<HibUser>
 	 * @return
 	 */
 	default HibUser create(String username, HibUser creator, String uuid) {
-		HibUser user = createPersisted(uuid);
-		init(user, username, creator);
+		HibUser user = createPersisted(uuid, u -> {
+			init(u, username, creator);
+		});		
+		addBatchEvent(user.onCreated());
+		uncacheSync(user);
 		return mergeIntoPersisted(user);
 	}
 
@@ -217,7 +232,7 @@ public interface PersistingUserDao extends UserDao, PersistingDaoGlobal<HibUser>
 	default void failOnNoReadPermission(HibUser user, HibNodeFieldContainer container, String branchUuid, String requestedVersion) {
 		ContentDao contentDao = Tx.get().contentDao();
 		HibNode node = contentDao.getNode(container);
-		if (!hasReadPermission(user, container, branchUuid)) {
+		if (!hasReadPermission(user, container, branchUuid, requestedVersion)) {
 			throw error(FORBIDDEN, "error_missing_perm", node.getUuid(),
 				"published".equals(requestedVersion)
 					? READ_PUBLISHED_PERM.getRestPerm().getName()
@@ -276,17 +291,32 @@ public interface PersistingUserDao extends UserDao, PersistingDaoGlobal<HibUser>
 		return user;
 	}
 
-	default boolean hasReadPermission(HibUser user, HibNodeFieldContainer container, String branchUuid) {
-		ContentDao contentDao = Tx.get().contentDao();
-		HibNode node = contentDao.getNode(container);
-		if (hasPermission(user, node, READ_PERM)) {
-			return true;
+	/**
+	 * Check if a node container has requested read permissions.
+	 */
+	default boolean hasReadPermission(HibUser user, HibNodeFieldContainer container, String branchUuid, String requestedVersion) {
+		return Tx.get().contentDao().getContainerEdges(container).anyMatch(edge -> hasReadPermission(user, edge, branchUuid, requestedVersion));
+	}
+
+	/**
+	 * Check if a node container edge has requested read permissions.
+	 * 
+	 * @param user
+	 * @param edge
+	 * @param branchUuid
+	 * @param requestedVersion
+	 * @return
+	 */
+	default boolean hasReadPermission(HibUser user, HibNodeFieldContainerEdge edge, String branchUuid, String requestedVersion) {
+		PersistingContentDao contentDao = CommonTx.get().contentDao();
+		HibNode node = edge.getNode();
+		ContainerType type = ContainerType.forVersion(requestedVersion);
+
+		if (ContainerType.PUBLISHED.equals(type)) {
+			boolean published = contentDao.isType(edge, type, branchUuid);
+			return published && hasPermission(user, node, READ_PUBLISHED_PERM);
 		}
-		boolean published = contentDao.isPublished(container, branchUuid);
-		if (published && hasPermission(user, node, READ_PUBLISHED_PERM)) {
-			return true;
-		}
-		return false;
+		return hasPermission(user, node, READ_PERM);
 	}
 
 	/**
@@ -339,7 +369,7 @@ public interface PersistingUserDao extends UserDao, PersistingDaoGlobal<HibUser>
 			keyBuilder.append(referencedNode.getUuid());
 			keyBuilder.append(referencedNode.getProject().getName());
 		}
-		for (HibGroup group : getGroups(user)) {
+		for (HibGroup group : getPreparedData(user, ac, "user", "groups", u -> getGroups(u).list())) {
 			keyBuilder.append(group.getUuid());
 		}
 		keyBuilder.append(String.valueOf(user.isAdmin()));
@@ -383,6 +413,31 @@ public interface PersistingUserDao extends UserDao, PersistingDaoGlobal<HibUser>
 	}
 
 	@Override
+	default void beforeTransformToRestSync(Page<? extends HibCoreElement<? extends RestModel>> page,
+			InternalActionContext ac) {
+		GenericParameters generic = ac.getGenericParameters();
+		FieldsSet fields = generic.getFields();
+
+		preparePermissions(ac.getUser(), page, ac, fields);
+
+		@SuppressWarnings("unchecked")
+		List<HibUser> users = (List<HibUser>)page.getWrappedList();
+		prepareData(users, ac, "user", "groups", this::getGroups, fields.has("groups"));
+		prepareData(users, ac, "user", "roles", this::getRoles, fields.has("rolesHash"));
+	}
+
+	@Override
+	default void beforeGetETagForPage(Page<? extends HibCoreElement<? extends RestModel>> page,
+			InternalActionContext ac) {
+		preparePermissions(ac.getUser(), page, ac);
+
+		@SuppressWarnings("unchecked")
+		List<HibUser> users = (List<HibUser>)page.getWrappedList();
+		prepareData(users, ac, "user", "groups", this::getGroups);
+		prepareData(users, ac, "user", "roles", this::getRoles);
+	}
+
+	@Override
 	default UserResponse transformToRestSync(HibUser user, InternalActionContext ac, int level, String... languageTags) {
 		GenericParameters generic = ac.getGenericParameters();
 		FieldsSet fields = generic.getFields();
@@ -413,7 +468,7 @@ public interface PersistingUserDao extends UserDao, PersistingDaoGlobal<HibUser>
 			setGroups(user, ac, restUser);
 		}
 		if (fields.has("rolesHash")) {
-			restUser.setRolesHash(getRolesHash(user));
+			restUser.setRolesHash(getRolesHash(user, ac));
 		}
 		if (fields.has("forcedPasswordChange")) {
 			restUser.setForcedPasswordChange(user.isForcedPasswordChange());
@@ -459,7 +514,7 @@ public interface PersistingUserDao extends UserDao, PersistingDaoGlobal<HibUser>
 	 */
 	default void setGroups(HibUser user, InternalActionContext ac, UserResponse restUser) {
 		// TODO filter by permissions
-		for (HibGroup group : getGroups(user)) {
+		for (HibGroup group : getPreparedData(user, ac, "user", "groups", u -> getGroups(u).list())) {
 			GroupReference reference = group.transformToReference();
 			restUser.getGroups().add(reference);
 		}
@@ -467,7 +522,7 @@ public interface PersistingUserDao extends UserDao, PersistingDaoGlobal<HibUser>
 
 	@Override
 	default boolean updateDry(HibUser user, InternalActionContext ac) {
-		return update(user, ac, new DummyEventQueueBatch(), true);
+		return update(user, ac, Tx.get().batch(), true);
 	}
 
 	@Override
@@ -477,38 +532,33 @@ public interface PersistingUserDao extends UserDao, PersistingDaoGlobal<HibUser>
 
 	@Override
 	default HibUser create(InternalActionContext ac, EventQueueBatch batch, String uuid) {
-		HibBaseElement userRoot = Tx.get().data().permissionRoots().user();
-		GroupDao groupDao = Tx.get().groupDao();
-		ProjectDao projectDao = Tx.get().projectDao();
-		NodeDao nodeDao = Tx.get().nodeDao();
+		Tx tx = Tx.get();
+		HibBaseElement userRoot = tx.data().permissionRoots().user();
+		GroupDao groupDao = tx.groupDao();
+		ProjectDao projectDao = tx.projectDao();
+		NodeDao nodeDao = tx.nodeDao();
 		HibUser requestUser = ac.getUser();
 
 		UserCreateRequest requestModel = JsonUtil.readValue(ac.getBodyAsString(), UserCreateRequest.class);
 		if (requestModel == null) {
 			throw error(BAD_REQUEST, "error_parse_request_json_error");
 		}
-		if (isEmpty(requestModel.getPassword())) {
+		if (isBlank(requestModel.getPassword())) {
 			throw error(BAD_REQUEST, "user_missing_password");
 		}
-		if (isEmpty(requestModel.getUsername())) {
+		if (isBlank(requestModel.getUsername())) {
 			throw error(BAD_REQUEST, "user_missing_username");
 		}
 		if (!hasPermission(requestUser, userRoot, CREATE_PERM)) {
 			throw error(FORBIDDEN, "error_missing_perm", userRoot.getUuid(), CREATE_PERM.getRestPerm().getName());
 		}
 		String groupUuid = requestModel.getGroupUuid();
-		String userName = requestModel.getUsername();
-		HibUser conflictingUser = findByUsername(userName);
-		if (conflictingUser != null) {
-			throw conflict(conflictingUser.getUuid(), userName, "user_conflicting_username");
-		}
-
 		HibUser user = create(requestModel.getUsername(), requestUser, uuid);
 		user.setFirstname(requestModel.getFirstname());
 		user.setUsername(requestModel.getUsername());
 		user.setLastname(requestModel.getLastname());
 		user.setEmailAddress(requestModel.getEmailAddress());
-		updatePasswordHash(user, Tx.get().passwordEncoder().encode(requestModel.getPassword()));
+		updatePasswordHash(user, tx.passwordEncoder().encode(requestModel.getPassword()));
 		Boolean forcedPasswordChange = requestModel.getForcedPasswordChange();
 		if (forcedPasswordChange != null) {
 			user.setForcedPasswordChange(forcedPasswordChange);
@@ -525,9 +575,8 @@ public interface PersistingUserDao extends UserDao, PersistingDaoGlobal<HibUser>
 
 		inheritRolePermissions(requestUser, userRoot, user);
 		ExpandableNode reference = requestModel.getNodeReference();
-		batch.add(user.onCreated());
 
-		if (!isEmpty(groupUuid)) {
+		if (!isBlank(groupUuid)) {
 			HibGroup parentGroup = groupDao.loadObjectByUuid(ac, groupUuid, CREATE_PERM);
 			groupDao.addUser(parentGroup, user);
 			// batch.add(parentGroup.onUpdated());
@@ -539,7 +588,7 @@ public interface PersistingUserDao extends UserDao, PersistingDaoGlobal<HibUser>
 			String referencedNodeUuid = basicReference.getUuid();
 			String projectName = basicReference.getProjectName();
 
-			if (isEmpty(projectName) || isEmpty(referencedNodeUuid)) {
+			if (isBlank(projectName) || isBlank(referencedNodeUuid)) {
 				throw error(BAD_REQUEST, "user_incomplete_node_reference");
 			}
 
@@ -558,7 +607,7 @@ public interface PersistingUserDao extends UserDao, PersistingDaoGlobal<HibUser>
 	}
 
 	@Override
-	default void delete(HibUser user, BulkActionContext bac) {
+	default void delete(HibUser user) {
 		// TODO unhardcode the admin name
 		if ("admin".equals(user.getUsername())) {
 			throw error(FORBIDDEN, "error_illegal_admin_deletion");
@@ -571,9 +620,9 @@ public interface PersistingUserDao extends UserDao, PersistingDaoGlobal<HibUser>
 		// user will be just disabled and removed from all groups.");
 		// }
 		// outE(HAS_USER).removeAll();
-		bac.add(user.onDeleted());
+		CommonTx.get().batch().add(user.onDeleted());
 		deletePersisted(user);
-		bac.process();
+		CommonTx.get().data().maybeGetBulkActionContext().ifPresent(BulkActionContext::process);
 		Tx.get().permissionCache().clear();
 	}
 
@@ -581,6 +630,9 @@ public interface PersistingUserDao extends UserDao, PersistingDaoGlobal<HibUser>
 	// blocking
 	@Override
 	default HibUser setPassword(HibUser user, String password) {
+		if (isBlank(password)) {
+			throw error(BAD_REQUEST, "user_missing_password");
+		}
 		String hashedPassword = Tx.get().passwordEncoder().encode(password);
 		updatePasswordHash(user, hashedPassword);
 		return mergeIntoPersisted(user);
@@ -594,10 +646,10 @@ public interface PersistingUserDao extends UserDao, PersistingDaoGlobal<HibUser>
 	}
 
 	@Override
-	default String getRolesHash(HibUser user) {
+	default String getRolesHash(HibUser user, InternalActionContext ac) {
 		return Stream.concat(
 				Stream.of(user.isAdmin() ? "1" : "0"), 
-				StreamSupport.stream(getRoles(user).spliterator(), false)
+				getPreparedData(user, ac, "user", "roles", u -> getRoles(u)).stream()
 					.map(role -> role.getId().toString())
 					.sorted())
 			.collect(Collectors.joining());
@@ -656,7 +708,7 @@ public interface PersistingUserDao extends UserDao, PersistingDaoGlobal<HibUser>
 			modified = true;
 		}
 
-		if (!isEmpty(requestModel.getPassword())) {
+		if (!isBlank(requestModel.getPassword())) {
 			if (!dry) {
 				updatePasswordHash(user, Tx.get().passwordEncoder().encode(requestModel.getPassword()));
 			}
@@ -674,14 +726,14 @@ public interface PersistingUserDao extends UserDao, PersistingDaoGlobal<HibUser>
 					throw error(BAD_REQUEST, "user_incomplete_node_reference");
 				}
 				projectName = project.getName();
-				if (isEmpty(projectName)) {
+				if (isBlank(projectName)) {
 					throw error(BAD_REQUEST, "user_incomplete_node_reference");
 				}
 				referencedNodeUuid = response.getUuid();
 			}
 			if (reference instanceof NodeReference) {
 				NodeReference basicReference = ((NodeReference) reference);
-				if (isEmpty(basicReference.getProjectName()) || isEmpty(reference.getUuid())) {
+				if (isBlank(basicReference.getProjectName()) || isBlank(reference.getUuid())) {
 					throw error(BAD_REQUEST, "user_incomplete_node_reference");
 				}
 				referencedNodeUuid = basicReference.getUuid();
@@ -706,9 +758,14 @@ public interface PersistingUserDao extends UserDao, PersistingDaoGlobal<HibUser>
 		if (modified && !dry) {
 			user.setEditor(ac.getUser());
 			user.setLastEditedTimestamp();
-			user = mergeIntoPersisted(user);
+			mergeIntoPersisted(user);
 			batch.add(user.onUpdated());
 		}
 		return modified;
+	}
+
+	@Override
+	default Optional<NameCache<HibUser>> maybeGetCache() {
+		return Tx.maybeGet().map(CommonTx.class::cast).map(tx -> tx.data().mesh().userNameCache());
 	}
 }

@@ -3,6 +3,7 @@ package com.gentics.mesh.context;
 import com.gentics.mesh.core.data.user.HibUser;
 import com.gentics.mesh.core.rest.common.RestModel;
 import com.gentics.mesh.core.rest.error.GenericRestException;
+import com.gentics.mesh.etc.config.HttpServerConfig;
 
 import io.netty.handler.codec.http.HttpResponseStatus;
 import io.vertx.core.AsyncResult;
@@ -20,9 +21,16 @@ public abstract class AbstractInternalActionContext extends AbstractActionContex
 	 */
 	private Object bodyModel = null;
 
+	/**
+	 * Get the {@link HttpServerConfig} instance.
+	 * 
+	 * @return
+	 */
+	protected abstract HttpServerConfig getHttpServerConfig();
+
 	@Override
 	public void send(RestModel restModel, HttpResponseStatus status) {
-		send(restModel.toJson(), status);
+		send(restModel.toJson(isMinify(getHttpServerConfig())), status);
 	}
 
 	@Override
@@ -40,12 +48,13 @@ public abstract class AbstractInternalActionContext extends AbstractActionContex
 		this.bodyModel = model;
 	}
 
+	@SuppressWarnings("unchecked")
 	@Override
-	public <T> T fromJson(Class<?> classOfT) throws GenericRestException {
+	public <T> T fromJson(Class<?> classOfT, boolean nullable) throws GenericRestException {
 		if (bodyModel != null) {
 			return (T) bodyModel;
 		}
-		return super.fromJson(classOfT);
+		return super.fromJson(classOfT, nullable);
 	}
 
 	@Override

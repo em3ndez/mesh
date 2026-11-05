@@ -1,0 +1,181 @@
+---
+title: References
+---
+
+include::content/docs/variables.adoc-include[]
+
+== REST API
+
+The link:/docs/api[Gentics Mesh REST API] provides endpoints enabling you to invoke CRUD operations on just ANY Gentics Mesh element. 
+There are many things you can do with the REST API. To name a few:
+
+* Obviously you can create, update & fetch multilingual content items as well as tag them.
+* But you can also define the schemas, i.e. the content types of your project.
+* You can do file upload and image manipulation.
+* WebRoot Paths for fetching content by path as well as automatic link resolving greatly simplify the integration with any routing framework.
+* Fetching dynamic navigation menus and breadcrumbs based on the content structure will make your editors happy.
+* With Elasticsearch under the hood you can search your content.
+* You can manage your users and their permissions on content elements.
+
+NOTE: All REST API responses are available in JSON, only, except for binary data.
+
+=== Query Parameters
+
+The REST API end points can be used in combination with a set of query parameters, all of which are documented for the specific end points in the link:/docs/api[Gentics Mesh REST API] reference. Following, we provide an overview of the most common query parameters.
+
+==== Paging Parameters
+
+include::content/docs/examples/tables/PagingParametersImpl.adoc-include[]
+
+NOTE: Paging is not applied by default. It is advised to include the `perPage` query parameter whenever possible to reduce the response size.
+
+==== Versioning Parameters
+
+include::content/docs/examples/tables/VersioningParametersImpl.adoc-include[]
+
+===== Node Parameters
+
+include::content/docs/examples/tables/NodeParametersImpl.adoc-include[]
+
+===== Role Permission Parameters
+
+include::content/docs/examples/tables/RolePermissionParametersImpl.adoc-include[]
+
+== HTTP
+
+=== Encoding
+
+Gentics Mesh expects and returns UTF-8 encoded data. Sending data in any other encoding format will result in encoding issues.
+
+=== Headers
+
+It is important to set the ```Content-Type: application/json``` when sending JSON data and to also set the ```Accept``` header in order to signal Gentics Mesh that your client is accepting JSON.
+
+[source,bash]
+----
+Content-Type: application/json
+Accept: application/json
+----
+
+A request which is not well formatted may fail. Gentics Mesh will do its best to identify the issue and return a meaningful error response in those cases.
+
+=== CORS
+
+The Cross-Origin Resource Sharing mechanism enables Gentics Mesh to configure cross-domain access controls.
+
+You can read up on this topic on the link:https://developer.mozilla.org/en-US/docs/Web/HTTP/Access_control_CORS[MDN article].
+
+The CORS header handling can be configured using the `httpServerOptions.corsAllowedOriginPattern`, `httpServerOptions.corsAllowCredentials` and `httpServerOptions.enableCors` configuration settings.
+
+==== Multi Site Example
+
+The `corsAllowedOriginPattern` setting accepts a regular expression pattern. It is thus possible to allow multiple origins.
+
+Example:
+
+```
+httpServer:
+  corsAllowedOriginPattern: "http://mydomain:5000|http://mydomain2:5000"
+  corsAllowCredentials: true
+  enableCors: true
+```
+
+=== ETag Handling
+
+Most endpoints of the Gentics Mesh REST API will return an ETag header within the response. 
+
+```
+ETag:W/"1125-7cc5c6fb"
+```
+
+These headers values can be used to implement or utilize existing web caching solutions.
+
+An ETag validation occurs once the ETag is passed along a http request.
+
+```
+If-None-Match:W/"1125-7cc5c6fb"
+```
+
+Gentics Mesh will compare the provided ETag with the current state of the content and return a 304 response if the ETag is the same and the response did not change. Updating the requested resource will alter its ETag and thus another request would return the response which includes the current ETag.
+
+ETag Handling can be disabled for each request via the `?etag=false` query parameter. This will increase performance when ETag headers are not needed.
+
+//=== Error Codes
+
+== HTTPs
+
+Server side SSL support can be enabled via the `server.ssl` flag or the `MESH_HTTP_SSL_ENABLE` environment variable. SSL support is disabled by default.
+
+NOTE: In most cases a reverse proxy like link:https://containo.us/traefik/[Traefik] which handles HTTPs is a more viable solution compared to handle HTTPs by Gentics Mesh Server. 
+
+=== Ports
+
+The HTTPs server port can be configured via `server.sslPort` or environment variable `MESH_HTTPS_PORT`. The default is port **8443**.
+
+The HTTP server port uses the `server.port` setting with default **8080**.
+
+TIP: You can also turn off the HTTP server via the `server.http` setting.
+
+=== Certificates
+
+A server certificate and server key in PEM format has to be provided.
+The `server.certPath` and `server.keyPath` settings can be used to set the path to the generated files.
+
+For testing purposes you may want to create a self signed certificate like this:
+
+[source,bash]
+----
+openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 90 -nodes
+----
+
+=== Client Certificate
+
+Gentics Mesh also support client certificate handling. The server can be configured to reject, request or require client certificates.
+
+Client certificates are a good option to ensure that the SSL connection between client and server is trusted by both parties.
+
+NOTE: Please note that client certificates will currently not provide a way to handle authentication. The send request still needs to provide an API Key to be authenticated and mapped to a user.
+
+NOTE: All certs / keys must be in PEM format.
+
+==== Client Authentication Modes
+
+The `server.clientAuthMode` (Env: `MESH_HTTP_SSL_CLIENT_AUTH_MODE`) setting can be used to control the client authenticaton mode.
+
+The Gentics Mesh HTTPs server supports three client authentication modes:
+
+* `none` - Reject client certificates during SSL handshake (**default**)
+* `request` - Request client certificate. A client certificate will be used when provided. The request will also work when omitting the client cert.
+* `require` - Requiring a client certificate. The ssl handshake will fail when no client certificate was provided.
+
+The `server.trustedCertPaths` (Env: `MESH_HTTP_SSL_TRUSTED_CERTS`) setting can be used to set a list of certificates which will be trusted by the server.
+
+== API Tools
+
+Gentics Mesh provides the `/raml` endpoint to easily extract the API documentation into third party tools.
+
+=== Insomnia 
+
+The link:https://insomnia.rest/[insomnia REST and GraphQL client] can be used to quickly and efficiently interact with the API.  
+
+You can download and import link:../mesh-insomnia-v1.json[mesh-insomnia-v1.json] in your Insomnia REST workspace to get a pre-defined set of useful requests and examples.
+
+=== Postman 
+
+Here is a quick guide to import the API into link:https://www.getpostman.com/[Postman]:
+
+* Once the Postman app is started go to "Import" > "Import from Link"
+* Input the URL to the `/raml` endpoint of your Mesh instance.
+
+TIP: Make use of the params and workspace parameters to maximize your productiviy. Check out the link:https://www.getpostman.com/docs/v6/postman/sending_api_requests/requests#url[Postman documentation about URL setup] for more.
+
+=== RAML Specification
+
+The link:https://github.com/raml-org/raml-spec/blob/master/versions/raml-08/raml-08.md[RAML v0.8 specification] provides the generic REST API information, and can be checked link:/docs/api/api.raml[here].
+
+=== OpenAPI Specification
+
+The link:https://swagger.io/specification/[OpenAPI specification] is available for Gentics Mesh in two variants:
+
+* The generic link:https://spec.openapis.org/oas/v3.0.0.html[OpenAPI v3.0 specification], unrelated to any actual Gentics Mesh installation, can be checked right link:/docs/api/openapi.yaml[here] in the YAML format.
+* The installation-aware specification, which is generated right in Mesh at runtime, and, in addition to the generic specification, contains also the endpoints of all the plugins currently running along, as well as some technical info of an installation (servers).

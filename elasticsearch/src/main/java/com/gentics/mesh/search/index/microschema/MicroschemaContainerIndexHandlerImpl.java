@@ -1,6 +1,11 @@
 package com.gentics.mesh.search.index.microschema;
 
+import static com.gentics.mesh.util.PreparationUtil.prepareData;
+
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -11,14 +16,22 @@ import java.util.stream.Stream;
 import javax.inject.Inject;
 import javax.inject.Singleton;
 
+import org.apache.commons.lang3.tuple.Pair;
+
 import com.gentics.mesh.context.InternalActionContext;
+import com.gentics.mesh.core.data.Bucket;
 import com.gentics.mesh.core.data.HibBucketableElement;
+import com.gentics.mesh.core.data.dao.MicroschemaDao;
+import com.gentics.mesh.core.data.dao.RoleDao;
+import com.gentics.mesh.core.data.perm.InternalPermission;
 import com.gentics.mesh.core.data.schema.HibMicroschema;
+import com.gentics.mesh.core.data.search.Compliance;
 import com.gentics.mesh.core.data.search.index.IndexInfo;
 import com.gentics.mesh.core.data.search.request.SearchRequest;
 import com.gentics.mesh.core.db.Database;
 import com.gentics.mesh.core.db.Tx;
 import com.gentics.mesh.etc.config.MeshOptions;
+import com.gentics.mesh.handler.DataHolderContext;
 import com.gentics.mesh.search.SearchProvider;
 import com.gentics.mesh.search.index.BucketManager;
 import com.gentics.mesh.search.index.entry.AbstractIndexHandler;
@@ -33,19 +46,19 @@ import io.reactivex.Flowable;
 @Singleton
 public class MicroschemaContainerIndexHandlerImpl extends AbstractIndexHandler<HibMicroschema> implements MicroschemaIndexHandler {
 
-	@Inject
-	MicroschemaTransformer transformer;
+	protected final MicroschemaTransformer transformer;
+
+	protected final MicroschemaMappingProvider mappingProvider;
+
+	protected final SyncMetersFactory syncMetersFactory;
 
 	@Inject
-	MicroschemaMappingProvider mappingProvider;
-
-	@Inject
-	SyncMetersFactory syncMetersFactory;
-
-	@Inject
-	public MicroschemaContainerIndexHandlerImpl(SearchProvider searchProvider, Database db, MeshHelper helper,
-		MeshOptions options, SyncMetersFactory syncMetricsFactory, BucketManager bucketManager) {
-		super(searchProvider, db, helper, options, syncMetricsFactory, bucketManager);
+	public MicroschemaContainerIndexHandlerImpl(SearchProvider searchProvider, Database db, MeshHelper helper, Compliance compliance,
+		MeshOptions options, SyncMetersFactory syncMetricsFactory, BucketManager bucketManager, MicroschemaTransformer transformer, MicroschemaMappingProvider mappingProvider, SyncMetersFactory syncMetersFactory) {
+		super(searchProvider, db, helper, options, syncMetricsFactory, bucketManager, compliance);
+		this.transformer = transformer;
+		this.mappingProvider = mappingProvider;
+		this.syncMetersFactory = syncMetersFactory;
 	}
 
 	@Override
@@ -96,15 +109,27 @@ public class MicroschemaContainerIndexHandlerImpl extends AbstractIndexHandler<H
 	}
 
 	@Override
-	public Stream<? extends HibMicroschema> loadAllElements() {
-		return Tx.get().microschemaDao().findAll().stream();
+	public Function<Collection<String>, Stream<Pair<String, HibMicroschema>>> elementsLoader() {
+		return (uuids) -> Tx.get().microschemaDao().findByUuids(uuids);
 	}
 
 	@Override
-	public Map<String, IndexInfo> getIndices() {
+	public Collection<? extends HibMicroschema> loadAllElements(Bucket bucket, DataHolderContext dhc) {
+		MicroschemaDao microschemaDao = Tx.get().microschemaDao();
+		RoleDao roleDao = Tx.get().roleDao();
+
+		List<HibMicroschema> microschemasInBucket = new ArrayList<>(microschemaDao.findAll(bucket).list());
+		prepareData(microschemasInBucket, dhc, "microschema", "permissions",
+				elements -> roleDao.getRoleUuidsForPerm(elements, InternalPermission.READ_PERM));
+
+		return microschemasInBucket;
+	}
+
+	@Override
+	public Map<String, Optional<IndexInfo>> getIndices() {
 		String indexName = HibMicroschema.composeIndexName();
 		IndexInfo info = new IndexInfo(indexName, null, getMappingProvider().getMapping(), "microschema");
-		return Collections.singletonMap(indexName, info);
+		return Collections.singletonMap(indexName, Optional.of(info));
 	}
 
 }

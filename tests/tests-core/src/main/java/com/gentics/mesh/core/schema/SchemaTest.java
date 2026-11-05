@@ -13,14 +13,16 @@ import java.io.IOException;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
 import org.apache.commons.lang3.tuple.Triple;
 import org.junit.Test;
 
 import com.gentics.mesh.FieldUtil;
-import com.gentics.mesh.context.BulkActionContext;
 import com.gentics.mesh.context.impl.BranchMigrationContextImpl;
 import com.gentics.mesh.core.data.Bucket;
 import com.gentics.mesh.core.data.HibNodeFieldContainer;
@@ -32,6 +34,7 @@ import com.gentics.mesh.core.data.dao.UserDao;
 import com.gentics.mesh.core.data.node.HibNode;
 import com.gentics.mesh.core.data.page.Page;
 import com.gentics.mesh.core.data.perm.InternalPermission;
+import com.gentics.mesh.core.data.project.HibProject;
 import com.gentics.mesh.core.data.schema.HibSchema;
 import com.gentics.mesh.core.data.schema.HibSchemaVersion;
 import com.gentics.mesh.core.data.service.BasicObjectTestcases;
@@ -45,10 +48,13 @@ import com.gentics.mesh.core.rest.schema.SchemaReference;
 import com.gentics.mesh.core.rest.schema.SchemaVersionModel;
 import com.gentics.mesh.core.rest.schema.impl.SchemaModelImpl;
 import com.gentics.mesh.core.rest.schema.impl.SchemaReferenceImpl;
+import com.gentics.mesh.core.rest.schema.impl.SchemaResponse;
+import com.gentics.mesh.core.rest.schema.impl.SchemaUpdateRequest;
 import com.gentics.mesh.core.rest.user.NodeReference;
 import com.gentics.mesh.error.InvalidArgumentException;
 import com.gentics.mesh.error.MeshSchemaException;
 import com.gentics.mesh.json.JsonUtil;
+import com.gentics.mesh.parameter.client.SchemaUpdateParametersImpl;
 import com.gentics.mesh.parameter.client.VersioningParametersImpl;
 import com.gentics.mesh.parameter.impl.PagingParametersImpl;
 import com.gentics.mesh.test.MeshTestSetting;
@@ -86,7 +92,7 @@ public class SchemaTest extends AbstractMeshTest implements BasicObjectTestcases
 		long before = tx(tx -> {
 			SchemaDao schemaDao = tx.schemaDao();
 			// Count contents in bucket 0 to MaxInt/2
-			return schemaDao.getFieldContainers(version, initialBranchUuid(), bucket).count();
+			return schemaDao.getFieldContainers(version, initialBranchUuid(), bucket, Optional.empty()).count();
 		});
 
 		// Now create a new container
@@ -96,7 +102,7 @@ public class SchemaTest extends AbstractMeshTest implements BasicObjectTestcases
 
 		tx(tx -> {
 			SchemaDao schemaDao = tx.schemaDao();
-			long after = schemaDao.getFieldContainers(version, initialBranchUuid(), bucket).count();
+			long after = schemaDao.getFieldContainers(version, initialBranchUuid(), bucket, Optional.empty()).count();
 			assertEquals("We should find one more content.", before + 1, after);
 		});
 
@@ -107,7 +113,7 @@ public class SchemaTest extends AbstractMeshTest implements BasicObjectTestcases
 
 		tx(tx -> {
 			SchemaDao schemaDao = tx.schemaDao();
-			long after = schemaDao.getFieldContainers(version, initialBranchUuid(), bucket).count();
+			long after = schemaDao.getFieldContainers(version, initialBranchUuid(), bucket, Optional.empty()).count();
 			assertEquals("We should still find the altered element ", before + 1, after);
 		});
 
@@ -118,7 +124,7 @@ public class SchemaTest extends AbstractMeshTest implements BasicObjectTestcases
 
 		tx(tx -> {
 			SchemaDao schemaDao = tx.schemaDao();
-			long after = schemaDao.getFieldContainers(version, initialBranchUuid(), bucket).count();
+			long after = schemaDao.getFieldContainers(version, initialBranchUuid(), bucket, Optional.empty()).count();
 			assertEquals("We should still find the altered element ", before, after);
 		});
 
@@ -205,18 +211,23 @@ public class SchemaTest extends AbstractMeshTest implements BasicObjectTestcases
 	@Test
 	@Override
 	public void testDelete() throws Exception {
-		try (Tx tx = tx()) {
+		// delete all nodes of the schema
+		tx(tx -> {
 			SchemaDao schemaDao = tx.schemaDao();
-			BulkActionContext context = createBulkContext();
 			String uuid = getSchemaContainer().getUuid();
 			NodeDao nodeDao = tx.nodeDao();
 			HibSchema schema = tx.schemaDao().findByUuid(uuid);
-			for (HibNode node : schemaDao.getNodes(schema)) {
-				nodeDao.delete(node, context, false, true);
+			for (HibNode node : schemaDao.getNodes(schema).list()) {
+				nodeDao.delete(node, false, true);
 			}
-			schemaDao.delete(schema, context);
+		});
+		tx(tx -> {
+			SchemaDao schemaDao = tx.schemaDao();
+			String uuid = getSchemaContainer().getUuid();
+			HibSchema schema = tx.schemaDao().findByUuid(uuid);
+			schemaDao.delete(schema);
 			assertNull("The schema should have been deleted", tx.schemaDao().findByUuid(uuid));
-		}
+		});
 	}
 
 	@Test
@@ -243,7 +254,7 @@ public class SchemaTest extends AbstractMeshTest implements BasicObjectTestcases
 			HibSchema newContainer = schemaDao.create(schema, user());
 			assertNotNull(newContainer);
 			String uuid = newContainer.getUuid();
-			schemaDao.delete(newContainer, createBulkContext());
+			schemaDao.delete(newContainer);
 			assertNull("The container should have been deleted", tx.schemaDao().findByUuid(uuid));
 		}
 	}
@@ -458,6 +469,43 @@ public class SchemaTest extends AbstractMeshTest implements BasicObjectTestcases
 				List<String> nodeUuids = nodes.stream().map(node -> getDisplayName(node, testCase.getLeft())).collect(Collectors.toList());
 				assertThat(nodeUuids).doesNotHaveDuplicates().containsOnlyElementsOf(expected);
 			}
+		}
+	}
+
+	/**
+	 * Test implementation of {@link HibSchema#findReferencedBranches()}
+	 */
+	@Test
+	public void testFindReferencedBranches() {
+		String schemaUuid = tx(() -> schemaContainer("folder").getUuid());
+		String version1Uuid = tx(() -> schemaContainer("folder").getLatestVersion().getUuid());
+
+		String initialBranchUuid = tx(() -> project().getInitialBranch().getUuid());
+		String newBranchUuid = tx(() -> createBranch("newbranch").getUuid());
+
+		SchemaResponse schemaResponse = call(() -> client().findSchemaByUuid(schemaUuid));
+		SchemaUpdateRequest update = JsonUtil.readValue(JsonUtil.toJson(schemaResponse), SchemaUpdateRequest.class);
+		update.setAutoPurge(false);
+
+		waitForJob(() -> client().updateSchema(schemaUuid, update, new SchemaUpdateParametersImpl().setBranchNames("newbranch")).blockingAwait());
+
+		String version2Uuid = tx(tx -> {
+			return tx.schemaDao().findByUuid(schemaUuid).getLatestVersion().getUuid();
+		});
+
+		try (Tx tx = tx()) {
+			HibProject project = project();
+			HibBranch initialBranch = tx.branchDao().findByUuid(project, initialBranchUuid);
+			HibBranch newBranch = tx.branchDao().findByUuid(project, newBranchUuid);
+
+			HibSchema schema = tx.schemaDao().findByUuid(schemaUuid);
+			HibSchemaVersion version1 = tx.schemaDao().findVersionByUuid(schema, version1Uuid);
+			HibSchemaVersion version2 = tx.schemaDao().findVersionByUuid(schema, version2Uuid);
+
+			Map<HibBranch, HibSchemaVersion> referencedBranches = schema.findReferencedBranches();
+
+			assertThat(referencedBranches).as("Map of referenced branches")
+					.containsOnly(Map.entry(initialBranch, version1), Map.entry(newBranch, version2));
 		}
 	}
 }

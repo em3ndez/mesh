@@ -1,0 +1,20 @@
+[options="header",cols="10%,10%,10%,70%"]
+|======
+
+| Property
+| Mandatory 
+| Type
+| Description
+
+
+| _metainfo
+| yes
+| object
+| Paging information of the list result.
+
+| data
+| yes
+| array
+| Array which contains the elements.
+
+|======

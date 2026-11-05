@@ -1,10 +1,11 @@
 package com.gentics.mesh.context;
 
-import java.util.Set;
+import java.util.List;
 
 import com.gentics.mesh.core.data.user.HibUser;
 import com.gentics.mesh.core.data.user.MeshAuthUser;
 import com.gentics.mesh.core.rest.common.RestModel;
+import com.gentics.mesh.etc.config.HttpServerConfig;
 import com.gentics.mesh.handler.ActionContext;
 import com.gentics.mesh.parameter.ParameterProviderContext;
 import com.gentics.mesh.router.route.SecurityLoggingHandler;
@@ -14,8 +15,8 @@ import io.netty.handler.codec.http.HttpResponseStatus;
 import io.vertx.core.AsyncResult;
 import io.vertx.core.Handler;
 import io.vertx.core.MultiMap;
+import io.vertx.core.http.Cookie;
 import io.vertx.core.spi.logging.LogDelegate;
-import io.vertx.ext.web.Cookie;
 import io.vertx.ext.web.FileUpload;
 
 /**
@@ -67,11 +68,11 @@ public interface InternalActionContext extends ActionContext, ParameterProviderC
 	void send(HttpResponseStatus status);
 
 	/**
-	 * Return the set of fileuploads that are accessible through the context.
+	 * Return the list of fileuploads that are accessible through the context.
 	 * 
 	 * @return
 	 */
-	Set<FileUpload> getFileUploads();
+	List<FileUpload> getFileUploads();
 
 	/**
 	 * Return the request headers.
@@ -181,4 +182,21 @@ public interface InternalActionContext extends ActionContext, ParameterProviderC
 	 */
 	boolean isAdmin();
 
+	/**
+	 * Check if the content is requested to be minified.
+	 * 
+	 * @param config
+	 * @return
+	 */
+	default boolean isMinify(HttpServerConfig config) {
+		Boolean localMinify = getDisplayParameters().getMinify();
+		return localMinify != null ? localMinify : (config != null && config.isMinifyJson());
+	}
+
+	/**
+	 * Set the config.
+	 * 
+	 * @param config
+	 */
+	void setHttpServerConfig(HttpServerConfig config);
 }

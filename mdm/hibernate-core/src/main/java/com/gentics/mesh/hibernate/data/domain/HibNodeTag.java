@@ -1,0 +1,99 @@
+package com.gentics.mesh.hibernate.data.domain;
+
+import java.io.Serializable;
+import java.util.Objects;
+
+import org.hibernate.annotations.Cache;
+import org.hibernate.annotations.CacheConcurrencyStrategy;
+
+import com.gentics.mesh.core.data.branch.HibBranch;
+import com.gentics.mesh.core.data.node.HibNode;
+import com.gentics.mesh.core.data.tag.HibTag;
+
+import jakarta.persistence.EmbeddedId;
+import jakarta.persistence.Entity;
+import jakarta.persistence.FetchType;
+import jakarta.persistence.ManyToOne;
+import jakarta.persistence.MapsId;
+
+/**
+ * Node-Tag edge.
+ * 
+ * @author plyhun
+ *
+ */
+@Cache(usage = CacheConcurrencyStrategy.READ_WRITE, region = "HibEntityCache")
+@Entity(name = "node_tag")
+public class HibNodeTag implements Serializable {
+
+    private static final long serialVersionUID = 9161649253483595823L;
+
+	@EmbeddedId
+    private HibNodeTagId id;
+
+    @ManyToOne(fetch = FetchType.LAZY, targetEntity = HibNodeImpl.class)
+    @MapsId("nodeUUID")
+    private HibNodeImpl node;
+
+    @ManyToOne(fetch = FetchType.LAZY, targetEntity = HibTagImpl.class)
+    @MapsId("tagUUID")
+    private HibTagImpl tag;
+
+    @ManyToOne(fetch = FetchType.LAZY, targetEntity = HibBranchImpl.class)
+    @MapsId("branchUUID")
+    private HibBranchImpl branch;
+
+    public HibNodeTag() {}
+
+    public HibNodeTag(HibNodeImpl node, HibTagImpl tag, HibBranchImpl branch) {
+        this.node = node;
+        this.tag = tag;
+        this.branch = branch;
+        id = new HibNodeTagId(node, tag, branch);
+    }
+
+    public HibNodeTagId getId() {
+        return id;
+    }
+
+    public void setId(HibNodeTagId id) {
+        this.id = id;
+    }
+
+    public HibNode getNode() {
+        return node;
+    }
+
+    public void setNode(HibNode node) {
+        this.node = (HibNodeImpl)node;
+    }
+
+    public HibTag getTag() {
+        return tag;
+    }
+
+    public void setTag(HibTag tag) {
+        this.tag = (HibTagImpl)tag;
+    }
+
+    public HibBranch getBranch() {
+        return branch;
+    }
+
+    public void setBranch(HibBranch branch) {
+        this.branch = (HibBranchImpl)branch;
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (o == null || getClass() != o.getClass()) return false;
+        HibNodeTag that = (HibNodeTag) o;
+        return Objects.equals(id, that.id) && Objects.equals(node, that.node) && Objects.equals(tag, that.tag) && Objects.equals(branch, that.branch);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(id, node, tag, branch);
+    }
+}

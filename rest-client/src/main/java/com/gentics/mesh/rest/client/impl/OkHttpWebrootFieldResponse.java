@@ -1,12 +1,13 @@
 package com.gentics.mesh.rest.client.impl;
 
+import static com.gentics.mesh.http.HttpConstants.TEXT_HTML_UTF8;
+import static com.gentics.mesh.http.HttpConstants.TEXT_PLAIN_UTF8;
 import static com.gentics.mesh.http.MeshHeaders.WEBROOT_NODE_UUID;
 import static com.gentics.mesh.http.MeshHeaders.WEBROOT_RESPONSE_TYPE;
-import static io.vertx.core.http.HttpHeaders.CONTENT_TYPE;
-import static com.gentics.mesh.http.HttpConstants.TEXT_PLAIN_UTF8;
-import static com.gentics.mesh.http.HttpConstants.TEXT_HTML_UTF8;
 import static com.gentics.mesh.rest.client.impl.Util.lazily;
+import static io.vertx.core.http.HttpHeaders.CONTENT_TYPE;
 
+import java.util.Optional;
 import java.util.function.Supplier;
 
 import org.apache.commons.lang.StringUtils;
@@ -17,6 +18,7 @@ import com.gentics.mesh.rest.client.MeshWebrootFieldResponse;
 
 import okhttp3.OkHttpClient;
 import okhttp3.Response;
+import okhttp3.ResponseBody;
 
 /**
  * {@link OkHttpClient} implementation of {@link MeshWebrootFieldResponse}.
@@ -30,9 +32,11 @@ public class OkHttpWebrootFieldResponse implements MeshWebrootFieldResponse {
 
 	private final Supplier<MeshBinaryResponse> binaryResponse;
 	private final Supplier<String> jsonStringResponse;
+	private final boolean minifyJson;
 	
-	public OkHttpWebrootFieldResponse(Response response) {
+	public OkHttpWebrootFieldResponse(Response response, boolean minifyJson) {
 		this.response = response;
+		this.minifyJson = minifyJson;
 		binaryResponse = lazily(() -> new OkHttpBinaryResponse(response));
 		jsonStringResponse = lazily(() -> response.body().string());
 	}
@@ -71,7 +75,7 @@ public class OkHttpWebrootFieldResponse implements MeshWebrootFieldResponse {
 			return null;
 		}
 		if (isPlainText()) {
-			return JsonUtil.toJson(jsonStringResponse.get());
+			return JsonUtil.toJson(jsonStringResponse.get(), minifyJson);
 		}
 		return jsonStringResponse.get();
 	}
@@ -87,5 +91,10 @@ public class OkHttpWebrootFieldResponse implements MeshWebrootFieldResponse {
 			return null;
 		}
 		return jsonStringResponse.get();
-	}	
+	}
+
+	@Override
+	public void close() {
+		Optional.ofNullable(response).map(Response::body).ifPresent(ResponseBody::close);
+	}
 }

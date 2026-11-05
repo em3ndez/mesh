@@ -7,10 +7,12 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.gentics.mesh.core.data.HibBaseElement;
 import com.gentics.mesh.core.data.HibElement;
 import com.gentics.mesh.core.db.cluster.ClusterManager;
-import com.gentics.mesh.core.rest.admin.cluster.ClusterConfigRequest;
 import com.gentics.mesh.core.rest.admin.cluster.ClusterConfigResponse;
 import com.gentics.mesh.core.verticle.handler.WriteLock;
 import com.gentics.mesh.event.EventQueueBatch;
@@ -23,8 +25,6 @@ import io.reactivex.functions.BiFunction;
 import io.reactivex.functions.Function;
 import io.vertx.core.AsyncResult;
 import io.vertx.core.Vertx;
-import io.vertx.core.logging.Logger;
-import io.vertx.core.logging.LoggerFactory;
 
 /**
  * Main description of a graph database.
@@ -129,23 +129,11 @@ public interface Database extends TxFactory {
 	Vertx vertx();
 
 	/**
-	 * Update the cluster configuration.
-	 * 
-	 * @param request
-	 */
-	void updateClusterConfig(ClusterConfigRequest request);
-
-	/**
 	 * Load the current cluster configuration.
 	 * 
 	 * @return
 	 */
 	ClusterConfigResponse loadClusterConfig();
-
-	/**
-	 * Block execution if a topology lock was found.
-	 */
-	void blockingTopologyLockCheck();
 
 	/**
 	 * Set the server role to master.
@@ -283,17 +271,17 @@ public interface Database extends TxFactory {
 		}
 
 		return Completable.create(sub -> {
-			vertx().executeBlocking(bc -> {
+			vertx().executeBlocking(() -> {
 				try {
 					tx(txHandler);
-					bc.complete();
+					return null;
 				} catch (Exception e) {
 					if (log.isTraceEnabled()) {
 						log.trace("Error while handling no-transaction.", e);
 					}
-					bc.fail(e);
+					throw e;
 				}
-			}, false, done -> {
+			}, false).andThen(done -> {
 				if (done.failed()) {
 					sub.onError(done.cause());
 				} else {
@@ -319,20 +307,20 @@ public interface Database extends TxFactory {
 		}
 
 		return Single.create(sub -> {
-			vertx().executeBlocking(bc -> {
+			vertx().executeBlocking(() -> {
 				try (Tx tx = tx()) {
 					Single<T> result = trxHandler.handle();
 					if (result == null) {
-						bc.complete();
+						return null;
 					} else {
 						try {
 							T ele = result.timeout(40, TimeUnit.SECONDS).blockingGet();
-							bc.complete(ele);
+							return ele;
 						} catch (Exception e2) {
 							if (e2 instanceof TimeoutException) {
 								log.error("Timeout while processing result of transaction handler.", e2);
 								log.error("Calling transaction stacktrace.", reference.get());
-								bc.fail(reference.get());
+								throw reference.get();
 							} else {
 								throw e2;
 							}
@@ -342,9 +330,9 @@ public interface Database extends TxFactory {
 					if (log.isTraceEnabled()) {
 						log.trace("Error while handling no-transaction.", e);
 					}
-					bc.fail(e);
+					throw e;
 				}
-			}, false, (AsyncResult<T> done) -> {
+			}, false).andThen((AsyncResult<T> done) -> {
 				if (done.failed()) {
 					sub.onError(done.cause());
 				} else {
@@ -375,20 +363,15 @@ public interface Database extends TxFactory {
 	 * @return
 	 */
 	default <T> Maybe<T> maybeTx(Function<Tx, T> handler, boolean useWriteLock) {
-		return new io.vertx.reactivex.core.Vertx(vertx()).rxExecuteBlocking(promise -> {
-			try {
-				if (useWriteLock) {
-					T result = null;
-					try (WriteLock lock = writeLock().lock(null)) {
-						result = tx(handler::apply);
-					}
-					promise.complete(result);
-				} else {
-					promise.complete(tx(handler::apply));
+		return new io.vertx.reactivex.core.Vertx(vertx()).rxExecuteBlocking(() -> {
+			if (useWriteLock) {
+				T result = null;
+				try (WriteLock lock = writeLock().lock(null)) {
+					result = tx(handler::apply);
 				}
-
-			} catch (Throwable e) {
-				promise.fail(e);
+				return result;
+			} else {
+				return tx(handler::apply);
 			}
 		}, false);
 	}
@@ -417,7 +400,7 @@ public interface Database extends TxFactory {
 	default <T> Single<T> singleTxWriteLock(TxEventAction<T> action) {
 		AtomicReference<EventQueueBatch> lazyBatch = new AtomicReference<>();
 		Function<Tx, T> handler = tx -> {
-			EventQueueBatch batch = tx.createBatch();
+			EventQueueBatch batch = tx.batch();
 			lazyBatch.set(batch);
 			return action.handle(batch, tx);
 		};

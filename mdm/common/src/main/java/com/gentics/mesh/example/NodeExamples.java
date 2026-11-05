@@ -40,6 +40,7 @@ import org.raml.model.parameter.FormParameter;
 import com.gentics.mesh.MeshVersion;
 import com.gentics.mesh.core.rest.navigation.NavigationElement;
 import com.gentics.mesh.core.rest.navigation.NavigationResponse;
+import com.gentics.mesh.core.rest.node.BinaryCheckUpdateRequest;
 import com.gentics.mesh.core.rest.node.FieldMap;
 import com.gentics.mesh.core.rest.node.FieldMapImpl;
 import com.gentics.mesh.core.rest.node.NodeChildrenInfo;
@@ -48,19 +49,27 @@ import com.gentics.mesh.core.rest.node.NodeListResponse;
 import com.gentics.mesh.core.rest.node.NodeResponse;
 import com.gentics.mesh.core.rest.node.NodeUpdateRequest;
 import com.gentics.mesh.core.rest.node.PublishStatusModel;
+import com.gentics.mesh.core.rest.node.field.BinaryCheckStatus;
 import com.gentics.mesh.core.rest.node.field.BinaryField;
 import com.gentics.mesh.core.rest.node.field.BinaryFieldTransformRequest;
 import com.gentics.mesh.core.rest.node.field.Field;
 import com.gentics.mesh.core.rest.node.field.image.FocalPoint;
+import com.gentics.mesh.core.rest.node.field.image.ImageManipulationRequest;
+import com.gentics.mesh.core.rest.node.field.image.ImageVariantRequest;
+import com.gentics.mesh.core.rest.node.field.image.ImageVariantResponse;
+import com.gentics.mesh.core.rest.node.field.image.ImageVariantsResponse;
 import com.gentics.mesh.core.rest.node.field.impl.BinaryFieldImpl;
 import com.gentics.mesh.core.rest.node.field.impl.HtmlFieldImpl;
 import com.gentics.mesh.core.rest.node.field.impl.NumberFieldImpl;
 import com.gentics.mesh.core.rest.node.field.impl.StringFieldImpl;
+import com.gentics.mesh.core.rest.node.field.s3binary.S3BinaryUploadRequest;
 import com.gentics.mesh.core.rest.node.version.NodeVersionsResponse;
 import com.gentics.mesh.core.rest.node.version.VersionInfo;
 import com.gentics.mesh.core.rest.schema.impl.SchemaReferenceImpl;
 import com.gentics.mesh.core.rest.tag.TagReference;
 import com.gentics.mesh.core.rest.user.NodeReference;
+import com.gentics.mesh.parameter.image.CropMode;
+import com.gentics.mesh.parameter.image.ImageRect;
 import com.gentics.mesh.util.Tuple;
 
 public class NodeExamples extends AbstractExamples {
@@ -328,6 +337,21 @@ public class NodeExamples extends AbstractExamples {
 		return parameters;
 	}
 
+	public S3BinaryUploadRequest getExampleS3BinaryUploadFormParameters() {
+		S3BinaryUploadRequest parameters = new S3BinaryUploadRequest();
+		parameters.setVersion("1.0");
+		parameters.setLanguage("en");
+		parameters.setFilename("blumen/blume.jpg");
+		return parameters;
+	}
+
+	public BinaryCheckUpdateRequest getExampleBinaryCheckCallbackParameters() {
+		BinaryCheckUpdateRequest parameters = new BinaryCheckUpdateRequest();
+		parameters.setStatus(BinaryCheckStatus.DENIED);
+		parameters.setReason("Malware detected");
+		return parameters;
+	}
+
 	public NodeVersionsResponse createVersionsList() {
 		NodeVersionsResponse response = new NodeVersionsResponse();
 		List<VersionInfo> list = new ArrayList<>();
@@ -341,4 +365,22 @@ public class NodeExamples extends AbstractExamples {
 		return response;
 	}
 
+	public ImageVariantsResponse createImageVariantsResponse() {
+		ImageVariantsResponse imageVariantsResponse = new ImageVariantsResponse();
+		List<ImageVariantResponse> variants = new ArrayList<>(3);
+		variants.add(new ImageVariantResponse().setHeight(100).setWidth(500).setOrigin(true));
+		variants.add(new ImageVariantResponse().setCropMode(CropMode.RECT).setRect(new ImageRect(10, 10, 20, 20)));
+		variants.add(new ImageVariantResponse().setHeight(10).setHeight(50));
+		imageVariantsResponse.setVariants(variants);
+		return imageVariantsResponse;
+	}
+
+	public ImageManipulationRequest createImageManipulationRequest() {
+		ImageManipulationRequest imageManipulationRequest = new ImageManipulationRequest();
+		List<ImageVariantRequest> variants = new ArrayList<>(2);
+		variants.add(new ImageVariantRequest().setHeight(100).setWidth("auto"));
+		variants.add(new ImageVariantRequest().setFocalPoint(0.3f, 0.3f).setFocalPointZoom(0.6f));
+		imageManipulationRequest.setVariants(variants);
+		return imageManipulationRequest;
+	}
 }

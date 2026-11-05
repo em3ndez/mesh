@@ -1,9 +1,10 @@
 package com.gentics.mesh.core.webrootfield;
 
-import static com.gentics.mesh.test.AWSTestMode.MINIO;
+import static com.gentics.mesh.test.AWSTestMode.RUSTFS;
 import static com.gentics.mesh.test.ClientHelper.call;
 import static com.gentics.mesh.test.TestDataProvider.PROJECT_NAME;
 import static io.netty.handler.codec.http.HttpResponseStatus.NOT_FOUND;
+import static org.assertj.core.api.Assertions.fail;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
@@ -14,6 +15,7 @@ import java.io.IOException;
 import java.util.Arrays;
 import java.util.Calendar;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -25,6 +27,8 @@ import org.apache.commons.lang3.StringUtils;
 import org.junit.Assert;
 import org.junit.Test;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.gentics.mesh.core.data.dao.ContentDao;
 import com.gentics.mesh.core.data.node.HibNode;
 import com.gentics.mesh.core.data.schema.HibMicroschema;
@@ -37,17 +41,20 @@ import com.gentics.mesh.core.rest.node.NodeUpdateRequest;
 import com.gentics.mesh.core.rest.node.field.BooleanField;
 import com.gentics.mesh.core.rest.node.field.DateField;
 import com.gentics.mesh.core.rest.node.field.HtmlField;
+import com.gentics.mesh.core.rest.node.field.JsonField;
 import com.gentics.mesh.core.rest.node.field.NumberField;
 import com.gentics.mesh.core.rest.node.field.StringField;
 import com.gentics.mesh.core.rest.node.field.impl.BooleanFieldImpl;
 import com.gentics.mesh.core.rest.node.field.impl.DateFieldImpl;
 import com.gentics.mesh.core.rest.node.field.impl.HtmlFieldImpl;
+import com.gentics.mesh.core.rest.node.field.impl.JsonFieldImpl;
 import com.gentics.mesh.core.rest.node.field.impl.NodeFieldImpl;
 import com.gentics.mesh.core.rest.node.field.impl.NumberFieldImpl;
 import com.gentics.mesh.core.rest.node.field.list.FieldList;
 import com.gentics.mesh.core.rest.node.field.list.impl.BooleanFieldListImpl;
 import com.gentics.mesh.core.rest.node.field.list.impl.DateFieldListImpl;
 import com.gentics.mesh.core.rest.node.field.list.impl.HtmlFieldListImpl;
+import com.gentics.mesh.core.rest.node.field.list.impl.JsonFieldListImpl;
 import com.gentics.mesh.core.rest.node.field.list.impl.MicronodeFieldListImpl;
 import com.gentics.mesh.core.rest.node.field.list.impl.NodeFieldListImpl;
 import com.gentics.mesh.core.rest.node.field.list.impl.NumberFieldListImpl;
@@ -58,6 +65,7 @@ import com.gentics.mesh.core.rest.schema.impl.BinaryFieldSchemaImpl;
 import com.gentics.mesh.core.rest.schema.impl.BooleanFieldSchemaImpl;
 import com.gentics.mesh.core.rest.schema.impl.DateFieldSchemaImpl;
 import com.gentics.mesh.core.rest.schema.impl.HtmlFieldSchemaImpl;
+import com.gentics.mesh.core.rest.schema.impl.JsonFieldSchemaImpl;
 import com.gentics.mesh.core.rest.schema.impl.ListFieldSchemaImpl;
 import com.gentics.mesh.core.rest.schema.impl.MicronodeFieldSchemaImpl;
 import com.gentics.mesh.core.rest.schema.impl.MicroschemaReferenceImpl;
@@ -80,7 +88,7 @@ import com.gentics.mesh.util.DateUtils;
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
 
-@MeshTestSetting(awsContainer = MINIO, testSize = TestSize.FULL, startServer = true)
+@MeshTestSetting(awsContainer = RUSTFS, testSize = TestSize.FULL, startServer = true)
 public class WebRootFieldTypeTest extends AbstractMeshTest {
 
 	// Binary field
@@ -130,7 +138,7 @@ public class WebRootFieldTypeTest extends AbstractMeshTest {
 			String s3Bucket = getTestContext().getOptions().getS3Options().getBucket();
 			File tempFile = createTempFile();
 			s3BinaryStorage().createBucket(s3Bucket)
-					.flatMap(unused -> s3BinaryStorage().uploadFile(s3Bucket, nodeUuid + "/s3binary", tempFile, false))
+					.flatMap(unused -> s3BinaryStorage().uploadFile(s3Bucket, nodeUuid + "/s3binary/en", tempFile, false))
 					.blockingGet();
 		}) : Optional.empty();
 
@@ -271,6 +279,55 @@ public class WebRootFieldTypeTest extends AbstractMeshTest {
 		testList(fieldShouldExist, contentShouldExist, FieldTypes.STRING, "val=1", "2val", "val3", "val 4");
 	}
 
+
+	// JSON object field
+
+	@Test
+	public void testJsonExists() throws IOException {
+		testJson(true, true);
+	}
+
+	@Test
+	public void testJsonNotExists() throws IOException {
+		testJson(true, false);
+	}
+
+	@Test
+	public void testJsonFieldNotExists() throws IOException {
+		testJson(false, false);
+	}
+
+	private void testJson(boolean fieldShouldExist, boolean contentShouldExist) throws IOException {
+		JsonNode value = JsonUtil.getMapper().createArrayNode().add("Mickey").add("Mouse");
+
+		Optional<FieldSchema> maybeField = fieldShouldExist
+				? Optional.of(new JsonFieldSchemaImpl().setName("json_content").setLabel("JSON object content"))
+				: Optional.empty();
+
+		Optional<Consumer<HibNode>> maybeContentSupplier = contentShouldExist ? Optional.of(node -> {
+			String uuid = tx(() -> node.getUuid());
+			NodeResponse response = call(() -> client().findNodeByUuid(PROJECT_NAME, uuid,
+					new VersioningParametersImpl().draft(), new NodeParametersImpl().setResolveLinks(LinkType.SHORT)));
+			NodeUpdateRequest request = response.toRequest();
+			JsonField field = new JsonFieldImpl();
+			field.setJson(value);
+			request.getFields().put("json_content", field);
+			call(() -> client().updateNode(PROJECT_NAME, node.getUuid(), request));
+		}) : Optional.empty();
+
+		Consumer<MeshWebrootFieldResponse> resultsConsumer = response -> {
+			assertFalse(response.isPlainText());
+			assertFalse(response.isBinary());
+			try {
+				Assert.assertEquals(JsonUtil.getMapper().readTree(response.getResponseAsJsonString()), value);
+			} catch (JsonProcessingException e) {
+				fail(e);
+			}
+		};
+
+		testField("/News/2015/News_2015.en.html", maybeField, maybeContentSupplier, resultsConsumer, false);
+	}
+
 	// Boolean field
 
 	@Test
@@ -336,6 +393,40 @@ public class WebRootFieldTypeTest extends AbstractMeshTest {
 		testList(fieldShouldExist, contentShouldExist, FieldTypes.BOOLEAN, false, true, false, true, false);
 	}
 
+	// JSON object list field
+
+	@Test
+	public void testJsonListExists() throws IOException {
+		testJsonList(true, true);
+	}
+
+	@Test
+	public void testJsonListNotExists() throws IOException {
+		testJsonList(true, false);
+	}
+
+	@Test
+	public void testJsonListFieldNotExists() throws IOException {
+		testJsonList(false, false);
+	}
+
+	private void testJsonList(boolean fieldShouldExist, boolean contentShouldExist) throws IOException {
+		JsonObject[] values = new JsonObject[] {
+				new JsonObject().put("name", "Mickey"), 
+				new JsonObject().put("name", "Minnie"), 
+				new JsonObject().put("name", "Donald"), 
+				new JsonObject().put("name", "Daisy"), 
+				new JsonObject().put("name", "Pluto")
+		};
+		testList(fieldShouldExist, contentShouldExist, FieldTypes.JSON, 
+				List.of(values), Optional.of(response -> {
+					assertFalse(response.isPlainText());
+					assertFalse(response.isBinary());
+					JsonArray json = JsonUtil.readValue(response.getResponseAsJsonString(), JsonArray.class);
+					assertTrue(Arrays.equals(IntStream.range(0, json.size()).mapToObj(json::getJsonObject).toArray(size -> new JsonObject[size]), values));
+				}));
+	}
+
 	// Date field
 
 	@Test
@@ -383,7 +474,7 @@ public class WebRootFieldTypeTest extends AbstractMeshTest {
 		testField("/News/2015/News_2015.en.html", maybeField, maybeContentSupplier, resultsConsumer, false);
 	}
 
-	// Boolean list field
+	// Date list field
 
 	@Test
 	public void testDateListExists() throws IOException {
@@ -577,13 +668,13 @@ public class WebRootFieldTypeTest extends AbstractMeshTest {
 				valuesSet.add(micronode.getFields().getStringField("lastName").getString());
 			});
 
-			json.forEach(result -> {
-				JsonObject o = (JsonObject) result;
-				assertTrue(valuesSet.remove(o.getJsonObject("fields").getString("firstName")));
-				assertTrue(valuesSet.remove(o.getJsonObject("fields").getString("lastName")));
+			for (Iterator<Object> iterator = json.iterator(); iterator.hasNext(); ) {
+				JsonObject result = (JsonObject) iterator.next();
+				assertTrue(valuesSet.remove(result.getJsonObject("fields").getString("firstName")));
+				assertTrue(valuesSet.remove(result.getJsonObject("fields").getString("lastName")));
 
-				json.remove(result);
-			});
+				iterator.remove();
+			}
 
 			assertTrue(valuesSet.isEmpty());
 		};
@@ -677,12 +768,11 @@ public class WebRootFieldTypeTest extends AbstractMeshTest {
 
 			Set<String> valuesSet = list.stream().map(node -> node.getUuid()).collect(Collectors.toSet());
 
-			json.forEach(result -> {
-				JsonObject o = (JsonObject) result;
-				assertTrue(valuesSet.remove(o.getString("uuid")));
-
-				json.remove(result);
-			});
+			for (Iterator<Object> iterator = json.iterator(); iterator.hasNext(); ) {
+				JsonObject result = (JsonObject) iterator.next();
+				assertTrue(valuesSet.remove(result.getString("uuid")));
+				iterator.remove();
+			}
 
 			assertTrue(valuesSet.isEmpty());
 		};
@@ -690,6 +780,7 @@ public class WebRootFieldTypeTest extends AbstractMeshTest {
 		testList(fieldShouldExist, contentShouldExist, FieldTypes.NODE, list, Optional.of(asserter));
 	}
 
+	@SuppressWarnings("unchecked")
 	private <T extends Object> void testList(boolean fieldShouldExist, boolean contentShouldExist, FieldTypes type,
 			T... listValues) throws IOException {
 		List<T> values = Arrays.asList(listValues);
@@ -735,6 +826,9 @@ public class WebRootFieldTypeTest extends AbstractMeshTest {
 			case MICRONODE:
 				fieldList = (FieldList<T>) new MicronodeFieldListImpl();
 				break;
+			case JSON:
+				fieldList = (FieldList<T>) new JsonFieldListImpl();
+				break;
 			default:
 				throw new IllegalArgumentException("Unsupported list item type: " + type.name());
 			}
@@ -751,7 +845,7 @@ public class WebRootFieldTypeTest extends AbstractMeshTest {
 			} else {
 				assertFalse(response.isPlainText());
 				assertFalse(response.isBinary());
-				JsonArray json = new JsonArray(response.getResponseAsJsonString());
+				JsonArray json = JsonUtil.readValue(response.getResponseAsJsonString(), JsonArray.class);
 				assertTrue(Arrays.equals(json.getList().toArray(new Object[values.size()]),
 						values.toArray(new Object[values.size()])));
 			}

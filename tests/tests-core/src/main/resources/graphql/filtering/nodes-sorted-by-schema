@@ -1,0 +1,12 @@
+{
+	nodes(sort: { schema: { name: ASCENDING } }) {
+		# [$.data.nodes.elements.length()=19]
+		elements {
+			schema {
+				# [$.data.nodes.elements=<is-sorted-by:schema.name:asc>]
+				name
+			}
+		}
+	}
+}
+# [$.errors=<is-undefined>]

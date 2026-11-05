@@ -3,7 +3,6 @@ package com.gentics.mesh.core.data.dao;
 import java.time.ZonedDateTime;
 import java.util.function.Predicate;
 
-import com.gentics.mesh.context.BulkActionContext;
 import com.gentics.mesh.context.InternalActionContext;
 import com.gentics.mesh.core.data.branch.HibBranch;
 import com.gentics.mesh.core.data.job.HibJob;
@@ -12,11 +11,10 @@ import com.gentics.mesh.core.data.project.HibProject;
 import com.gentics.mesh.core.data.schema.HibMicroschemaVersion;
 import com.gentics.mesh.core.data.schema.HibSchemaVersion;
 import com.gentics.mesh.core.data.user.HibUser;
+import com.gentics.mesh.core.rest.common.NameOrUUIDsRequest;
 import com.gentics.mesh.core.rest.job.JobResponse;
 import com.gentics.mesh.event.EventQueueBatch;
 import com.gentics.mesh.parameter.PagingParameters;
-
-import io.reactivex.Completable;
 
 /**
  * DAO for {@link HibJob}.
@@ -105,9 +103,8 @@ public interface JobDao extends DaoGlobal<HibJob>, DaoTransformable<HibJob, JobR
 	 * Delete the job.
 	 * 
 	 * @param job
-	 * @param bac
 	 */
-	void delete(HibJob job, BulkActionContext bac);
+	void delete(HibJob job);
 
 	/**
 	 * Create a new job.
@@ -138,9 +135,47 @@ public interface JobDao extends DaoGlobal<HibJob>, DaoTransformable<HibJob, JobR
 	HibJob enqueueVersionPurge(HibUser user, HibProject project);
 
 	/**
+	 * Enqueue a schema version purge job.
+	 * @param user creating user
+	 * @param request optional request with limits
+	 * @return
+	 */
+	HibJob enqueueSchemaVersionPurge(HibUser user, NameOrUUIDsRequest request);
+
+	/**
+	 * Enqueue a microschema version purge job.
+	 * @param user creating user
+	 * @param request optional request with limits.
+	 * @return
+	 */
+	HibJob enqueueMicroschemaVersionPurge(HibUser user, NameOrUUIDsRequest request);
+
+	/**
+	 * Enqueue a consistency check job.
+	 * @param user current user
+	 * @param repair true to repair consistencies
+	 * @return enqueued job
+	 */
+	HibJob enqueueConsistencyCheck(HibUser user, boolean repair);
+
+	/**
+	 * Enqueue an image check job.
+	 * 
+	 * @param user
+	 * @return
+	 */
+	HibJob enqueueImageCacheMigration(HibUser user);
+
+	/**
 	 * Purge all failed jobs from the job root.
 	 */
 	void purgeFailed();
+
+	/**
+	 * Delete the jobs referencing the project.
+	 * @param project
+	 */
+	void deleteByProject(HibProject project);
 
 	/**
 	 * Delete all jobs.

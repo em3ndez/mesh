@@ -29,6 +29,7 @@ import static io.netty.handler.codec.http.HttpResponseStatus.NOT_FOUND;
 import static io.netty.handler.codec.http.HttpResponseStatus.UNAUTHORIZED;
 import static io.vertx.core.http.HttpHeaders.HOST;
 import static io.vertx.core.http.HttpHeaders.LOCATION;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
@@ -37,12 +38,14 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import java.io.IOException;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 
-import com.gentics.mesh.core.data.role.HibRole;
-import com.gentics.mesh.core.db.CommonTx;
 import org.apache.commons.lang3.StringUtils;
 import org.junit.Ignore;
 import org.junit.Test;
@@ -55,15 +58,20 @@ import com.gentics.mesh.core.data.dao.UserDao;
 import com.gentics.mesh.core.data.group.HibGroup;
 import com.gentics.mesh.core.data.node.HibNode;
 import com.gentics.mesh.core.data.perm.InternalPermission;
+import com.gentics.mesh.core.data.role.HibRole;
 import com.gentics.mesh.core.data.tagfamily.HibTagFamily;
 import com.gentics.mesh.core.data.user.HibUser;
+import com.gentics.mesh.core.db.CommonTx;
 import com.gentics.mesh.core.db.Tx;
+import com.gentics.mesh.core.rest.SortOrder;
 import com.gentics.mesh.core.rest.common.ListResponse;
 import com.gentics.mesh.core.rest.common.Permission;
-import com.gentics.mesh.core.rest.error.GenericRestException;
 import com.gentics.mesh.core.rest.event.impl.MeshElementEventModelImpl;
 import com.gentics.mesh.core.rest.node.NodeResponse;
 import com.gentics.mesh.core.rest.user.NodeReference;
+import com.gentics.mesh.core.rest.user.UserAPITokenCreateRequest;
+import com.gentics.mesh.core.rest.user.UserAPITokenDataModel;
+import com.gentics.mesh.core.rest.user.UserAPITokenListResponse;
 import com.gentics.mesh.core.rest.user.UserAPITokenResponse;
 import com.gentics.mesh.core.rest.user.UserCreateRequest;
 import com.gentics.mesh.core.rest.user.UserListResponse;
@@ -75,15 +83,24 @@ import com.gentics.mesh.parameter.client.GenericParametersImpl;
 import com.gentics.mesh.parameter.impl.NodeParametersImpl;
 import com.gentics.mesh.parameter.impl.PagingParametersImpl;
 import com.gentics.mesh.parameter.impl.RolePermissionParametersImpl;
+import com.gentics.mesh.parameter.impl.SortingParametersImpl;
 import com.gentics.mesh.parameter.impl.UserParametersImpl;
 import com.gentics.mesh.rest.client.MeshRequest;
 import com.gentics.mesh.rest.client.MeshResponse;
+import com.gentics.mesh.rest.client.MeshRestClientConfig;
+import com.gentics.mesh.rest.client.MeshRestClientMessageException;
+import com.gentics.mesh.rest.client.impl.OkHttpClientUtil;
 import com.gentics.mesh.test.MeshTestSetting;
 import com.gentics.mesh.test.context.AbstractMeshTest;
 import com.gentics.mesh.test.definition.BasicRestTestcases;
+import com.gentics.mesh.util.DateUtils;
 import com.gentics.mesh.util.UUIDUtil;
 
 import io.vertx.core.json.JsonObject;
+import okhttp3.Headers;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.Response;
 
 @MeshTestSetting(elasticsearch = TRACKING, testSize = PROJECT_AND_NODE, startServer = true)
 public class UserEndpointTest extends AbstractMeshTest implements BasicRestTestcases {
@@ -182,6 +199,35 @@ public class UserEndpointTest extends AbstractMeshTest implements BasicRestTestc
 		assertNotEquals("The password hash has not been updated.", oldHash, newHash);
 	}
 
+	@Test
+	@Override
+	public void testReadPermittedSorted() throws Exception {
+		for (int i = 0; i < 10; i++) {
+			final String name = "test12345_" + i;
+			UserCreateRequest request = new UserCreateRequest();
+			request.setUsername(name);
+			request.setPassword(name);
+			UserResponse response = call(() -> client().createUser(request));
+			if ((i % 2) == 0) {
+				tx(tx -> {
+					tx.roleDao().revokePermissions(role(), tx.userDao().findByUuid(response.getUuid()), READ_PERM);
+				});
+			}
+		}
+		UserListResponse list = call(() -> client().findUsers(new SortingParametersImpl("username", SortOrder.DESCENDING)));
+		assertEquals("Total data size should be 8", 8, list.getData().size());
+		assertThat(list.getData()).isSortedAccordingTo((fa, fb) -> getTestContext().getSortComparator().reversed().compare(
+				fa != null ? fa.getUsername() : null,
+				fb != null ? fb.getUsername() : null));
+	}
+
+	@Test
+	@Override
+	public void testReadPermittedSortedWrongField() throws Exception {
+		MeshRestClientMessageException error = call(() -> client().findUsers(new SortingParametersImpl("existiertleidernicht", SortOrder.DESCENDING)), BAD_REQUEST);
+		assertThat(error.getResponseMessage().getMessage()).as("Error message").startsWith("The following column names are not allowed for sorting: [existiertleidernicht].");
+	}
+
 	/**
 	 * Test that the user is able to update itself even without the assigned perm. The reset token should grant the right to update himself.
 	 */
@@ -273,14 +319,16 @@ public class UserEndpointTest extends AbstractMeshTest implements BasicRestTestc
 	@Test
 	public void testAPIToken() {
 		String uuid = tx(() -> user().getUuid());
-		MeshResponse<UserAPITokenResponse> completeResponse = client().issueAPIToken(uuid).getResponse().blockingGet();
+		MeshResponse<UserAPITokenResponse> completeResponse = client().issueAPIToken(uuid, new UserAPITokenCreateRequest().setName("Test Token")).getResponse().blockingGet();
 		assertThat(completeResponse.getHeader("Cache-Control")).hasValue("private");
 
 		UserAPITokenResponse response = completeResponse.getBody();
-		assertNull("The key was previously not issued.", response.getPreviousIssueDate());
 		assertThat(response.getToken()).isNotEmpty();
+		assertThat(response.getData()).isNotNull();
 
-		assertNotNull(tx(tx -> { return tx.userDao().findByUuid(uuid).getAPIKeyTokenCode(); }));
+		UserAPITokenListResponse tokens = call(() -> client().findAPITokens(uuid));
+		assertThat(tokens.getData()).containsOnly(response.getData());
+
 		client().setLogin(null, null);
 		client().setAPIKey(response.getToken());
 
@@ -289,24 +337,73 @@ public class UserEndpointTest extends AbstractMeshTest implements BasicRestTestc
 		MeshResponse<UserResponse> userResponse = userRequest.getResponse().blockingGet();
 		assertThat(userResponse.getCookies()).as("Requests using the api key should not yield a new cookie").isEmpty();
 
-		// Now invalidate the api key by generating a new one
-		String oldKey = response.getToken();
-		response = call(() -> client().issueAPIToken(uuid));
-		assertNotEquals("Each key should be unique.", oldKey, response.getToken());
-		assertNotNull("The key was already requested once. Thus the date should be set.", response.getPreviousIssueDate());
-
-		// And continue invoking requests
+		// new invalidate the token
+		call(() -> client().invalidateAPIToken(uuid, response.getData().getUuid()));
 		call(() -> client().findUserByUuid(uuid), UNAUTHORIZED, "error_not_authorized");
+	}
 
-		// Now set the active key and verify that the request works
-		client().setAPIKey(response.getToken());
+	@Test
+	public void testAPITokenDuplicateName() {
+		String uuid = tx(() -> user().getUuid());
+		String conflictingName = "Conflicting Name";
+		call(() -> client().issueAPIToken(uuid, new UserAPITokenCreateRequest().setName(conflictingName)));
 
-		call(() -> client().findUserByUuid(uuid));
+		call(() -> client().issueAPIToken(uuid, new UserAPITokenCreateRequest().setName(conflictingName)), CONFLICT,
+				"apitoken_conflicting_name");
+	}
 
-		call(() -> client().invalidateAPIToken(uuid));
-		assertNull(tx(tx -> { return tx.userDao().findByUuid(uuid).getAPIKeyTokenCode(); }));
-		assertNull(tx(tx -> { return tx.userDao().findByUuid(uuid).getAPITokenIssueTimestamp(); }));
-		call(() -> client().findUserByUuid(uuid), UNAUTHORIZED, "error_not_authorized");
+	@Test
+	public void testAPITokenWithExpiration() {
+		String uuid = tx(() -> user().getUuid());
+		String name = "Test Token with Expiration";
+		String expires = DateUtils.toISO8601(Instant.now().plus(1, ChronoUnit.MINUTES).toEpochMilli());
+		UserAPITokenResponse tokenResponse = call(() -> client().issueAPIToken(uuid, new UserAPITokenCreateRequest().setName(name).setExpires(expires)));
+
+		assertThat(tokenResponse.getData()).as("Created token")
+			.hasFieldOrPropertyWithValue("name", name)
+			.hasFieldOrPropertyWithValue("expires", expires)
+			.hasFieldOrPropertyWithValue("valid", true);
+	}
+
+	@Test
+	public void testAPITokenWithExpirationInPast() {
+		String uuid = tx(() -> user().getUuid());
+		String name = "Test Token with Expiration";
+		String expires = DateUtils.toISO8601(Instant.now().minus(1, ChronoUnit.MINUTES).toEpochMilli());
+		call(() -> client().issueAPIToken(uuid, new UserAPITokenCreateRequest().setName(name).setExpires(expires)), BAD_REQUEST, "apitoken_expires_in_past");
+	}
+
+	@Test
+	public void testListAPITokens() {
+		int numTokens = 50;
+		Set<UserAPITokenDataModel> tokens = new HashSet<>();
+		String userUuid = tx(() -> user().getUuid());
+		String foreignUserUuid = tx(() -> users().get("admin").getUuid());
+
+		for (int i = 0; i < numTokens; i++) {
+			String name = "Token #%d".formatted(i);
+
+			tokens.add(call(() -> client().issueAPIToken(userUuid, new UserAPITokenCreateRequest().setName(name))).getData());
+			call(() -> client().issueAPIToken(foreignUserUuid, new UserAPITokenCreateRequest().setName(name)));
+		}
+
+		UserAPITokenListResponse tokenList = call(() -> client().findAPITokens(userUuid));
+		assertThat(tokenList.getData()).as("Tokens of user").hasSameElementsAs(tokens);
+	}
+
+	@Test
+	public void testListAPITokensWithoutPerm() {
+		String uuid = tx(() -> user().getUuid());
+
+		call(() -> client().issueAPIToken(uuid, new UserAPITokenCreateRequest().setName("Test Token")));
+
+		tx((tx) -> {
+			RoleDao roleDao = tx.roleDao();
+			roleDao.revokePermissions(role(), user(), UPDATE_PERM);
+			tx.success();
+		});
+
+		call(() -> client().findAPITokens(uuid), FORBIDDEN, "error_missing_perm", uuid, UPDATE_PERM.getRestPerm().getName());
 	}
 
 	@Test
@@ -318,7 +415,7 @@ public class UserEndpointTest extends AbstractMeshTest implements BasicRestTestc
 		});
 
 		call(() -> client().findUserByUuid(userUuid()));
-		call(() -> client().issueAPIToken(userUuid()), FORBIDDEN, "error_missing_perm", userUuid(), UPDATE_PERM.getRestPerm().getName());
+		call(() -> client().issueAPIToken(userUuid(), new UserAPITokenCreateRequest().setName("Forbidden Token")), FORBIDDEN, "error_missing_perm", userUuid(), UPDATE_PERM.getRestPerm().getName());
 	}
 
 	@Test
@@ -326,7 +423,7 @@ public class UserEndpointTest extends AbstractMeshTest implements BasicRestTestc
 
 		String uuid = userUuid();
 		call(() -> client().findUserByUuid(uuid));
-		call(() -> client().issueAPIToken(uuid));
+		UserAPITokenResponse tokenResponse = call(() -> client().issueAPIToken(uuid, new UserAPITokenCreateRequest().setName("Test Token")));
 
 		tx((tx) -> {
 			RoleDao roleDao = tx.roleDao();
@@ -335,7 +432,7 @@ public class UserEndpointTest extends AbstractMeshTest implements BasicRestTestc
 			tx.success();
 		});
 
-		call(() -> client().invalidateAPIToken(uuid), FORBIDDEN, "error_missing_perm", uuid, UPDATE_PERM.getRestPerm().getName());
+		call(() -> client().invalidateAPIToken(uuid, tokenResponse.getData().getUuid()), FORBIDDEN, "error_missing_perm", uuid, UPDATE_PERM.getRestPerm().getName());
 	}
 
 	@Test
@@ -569,6 +666,7 @@ public class UserEndpointTest extends AbstractMeshTest implements BasicRestTestc
 		listResponse = call(() -> client().findUsers(new PagingParametersImpl(4242)));
 		assertNull(listResponse.getMetainfo().getPerPage());
 
+		verifySorting(param -> call(() -> client().findUsers(param)), UserResponse::getUsername, "username", "List of usernames");
 	}
 
 	@Test
@@ -663,14 +761,6 @@ public class UserEndpointTest extends AbstractMeshTest implements BasicRestTestc
 			assertEquals(username, reloadedUser.getUsername());
 		}
 
-	}
-
-	@Test
-	@Override
-	public void testUpdateWithBogusUuid() throws GenericRestException, Exception {
-		UserUpdateRequest request = new UserUpdateRequest();
-		request.setUsername("New Name");
-		call(() -> client().updateUser("bogus", request), BAD_REQUEST, "error_illegal_uuid", "bogus");
 	}
 
 	@Test
@@ -1006,6 +1096,30 @@ public class UserEndpointTest extends AbstractMeshTest implements BasicRestTestc
 	// }
 
 	@Test
+	public void testUpdatePasswordWithEmptyPassword() {
+		String uuid;
+		String oldHash;
+
+		try (Tx tx = tx()) {
+			tx.userDao().updatePasswordHash(user(), null);
+			uuid = user().getUuid();
+			oldHash = user().getPasswordHash();
+			tx.success();
+		}
+
+		UserUpdateRequest updateRequest = new UserUpdateRequest();
+		updateRequest.setPassword("   ");
+
+		UserResponse restUser = call(() -> client().updateUser(uuid, updateRequest));
+		assertThat(restUser).matches(updateRequest);
+
+		try (Tx tx = tx()) {
+			HibUser reloadedUser = tx.userDao().findByUuid(uuid);
+			assertEquals("The hash should not be different and thus the password stays old.", oldHash, reloadedUser.getPasswordHash());
+		}
+	}
+
+	@Test
 	public void testUpdatePasswordWithNoOldPassword() {
 		String uuid;
 		String oldHash;
@@ -1014,6 +1128,7 @@ public class UserEndpointTest extends AbstractMeshTest implements BasicRestTestc
 			tx.userDao().updatePasswordHash(user(), null);
 			uuid = user().getUuid();
 			oldHash = user().getPasswordHash();
+			tx.success();
 		}
 
 		UserUpdateRequest updateRequest = new UserUpdateRequest();
@@ -1026,7 +1141,6 @@ public class UserEndpointTest extends AbstractMeshTest implements BasicRestTestc
 			HibUser reloadedUser = tx.userDao().findByUuid(uuid);
 			assertNotEquals("The hash should be different and thus the password updated.", oldHash, reloadedUser.getPasswordHash());
 		}
-
 	}
 
 	@Test
@@ -1039,6 +1153,7 @@ public class UserEndpointTest extends AbstractMeshTest implements BasicRestTestc
 			username = user.getUsername();
 			uuid = user.getUuid();
 			oldHash = user.getPasswordHash();
+			tx.success();
 		}
 		UserUpdateRequest updateRequest = new UserUpdateRequest();
 		updateRequest.setPassword("new_password");
@@ -1159,6 +1274,18 @@ public class UserEndpointTest extends AbstractMeshTest implements BasicRestTestc
 		newUser.setFirstname("Joe");
 		newUser.setLastname("Doe");
 		newUser.setUsername("new_user_test123");
+		newUser.setGroupUuid(groupUuid());
+		call(() -> client().createUser(newUser), BAD_REQUEST, "user_missing_password");
+	}
+
+	@Test
+	public void testCreateUserWithEmptyPassword() throws Exception {
+		UserCreateRequest newUser = new UserCreateRequest();
+		newUser.setEmailAddress("n.user@spam.gentics.com");
+		newUser.setFirstname("Joe");
+		newUser.setLastname("Doe");
+		newUser.setUsername("new_user_test123");
+		newUser.setPassword("      ");
 		newUser.setGroupUuid(groupUuid());
 		call(() -> client().createUser(newUser), BAD_REQUEST, "user_missing_password");
 	}
@@ -1451,11 +1578,6 @@ public class UserEndpointTest extends AbstractMeshTest implements BasicRestTestc
 		}
 	}
 
-	@Test(expected = NullPointerException.class)
-	public void testDeleteWithUuidNull() throws Exception {
-		call(() -> client().deleteUser(null), NOT_FOUND, "object_not_found_for_uuid", "null");
-	}
-
 	@Test
 	@Ignore
 	public void testReadOwnCreatedUser() {
@@ -1552,5 +1674,18 @@ public class UserEndpointTest extends AbstractMeshTest implements BasicRestTestc
 		UserResponse response = call(() -> client().findUserByUuid(user().getUuid()));
 
 		assertTrue("Roles hash should be in response", !StringUtils.isBlank(response.getRolesHash()));
+	}
+
+	@Test
+	public void testPreventSqlInjection() throws Exception {
+		OkHttpClient client = OkHttpClientUtil.createClient(client().getConfig());
+		Response response = client.newCall(new Request.Builder()
+				.url(client().getConfig().getBaseUrl() + "/users?order=asc&sortBy=dbUuid,extractvalue(1,concat(0x7e,(SELECT SUBSTRING(passwordHash,1,32) FROM mesh_user WHERE name='admin')))")
+				.headers(Headers.of(client().getAuthentication().getHeaders()))
+				.build())
+				.execute();
+		assertThat(response.code()).as("Response code").isEqualTo(BAD_REQUEST.code());
+		JsonObject jsonResponse = new JsonObject(response.body().string());
+		assertThat(jsonResponse.getString("message")).as("Error message").startsWith("The following column names are not allowed for sorting: [dbUuid,extractvalue(1,concat(0x7e,(SELECT SUBSTRING(passwordHash,1,32) FROM mesh_user WHERE name='admin')))].");
 	}
 }

@@ -6,8 +6,8 @@ import java.util.Map;
 import com.gentics.mesh.core.db.Database;
 
 import io.vertx.core.Vertx;
-import io.vertx.core.logging.Logger;
-import io.vertx.core.logging.LoggerFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import io.vertx.ext.web.Router;
 
 /**
@@ -41,7 +41,7 @@ public class ProjectRouterImpl implements ProjectRouter {
 			projectRouter = Router.router(vertx);
 			projectRouters.put(name, projectRouter);
 			log.info("Added project subrouter {" + name + "}");
-			router.mountSubRouter("/" + name, projectRouter);
+			router.route("/" + name + "*").subRouter(projectRouter);
 		}
 		return projectRouter;
 	}

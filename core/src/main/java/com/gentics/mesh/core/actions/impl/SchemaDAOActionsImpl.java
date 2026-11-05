@@ -5,7 +5,7 @@ import java.util.function.Predicate;
 import javax.inject.Inject;
 import javax.inject.Singleton;
 
-import com.gentics.mesh.context.BulkActionContext;
+import com.gentics.graphqlfilter.filter.operation.FilterOperation;
 import com.gentics.mesh.context.InternalActionContext;
 import com.gentics.mesh.core.action.DAOActionContext;
 import com.gentics.mesh.core.action.SchemaDAOActions;
@@ -91,8 +91,8 @@ public class SchemaDAOActionsImpl implements SchemaDAOActions {
 	}
 
 	@Override
-	public void delete(Tx tx, HibSchema schema, BulkActionContext bac) {
-		tx.schemaDao().delete(schema, bac);
+	public void delete(Tx tx, HibSchema schema) {
+		tx.schemaDao().delete(schema);
 	}
 
 	@Override
@@ -110,4 +110,8 @@ public class SchemaDAOActionsImpl implements SchemaDAOActions {
 		return schema.getETag(ac);
 	}
 
+	@Override
+	public Page<? extends HibSchema> loadAll(DAOActionContext ctx, PagingParameters pagingInfo, FilterOperation<?> extraFilter) {
+		return ctx.tx().schemaDao().findAll(ctx.ac(), pagingInfo, extraFilter);
+	}
 }

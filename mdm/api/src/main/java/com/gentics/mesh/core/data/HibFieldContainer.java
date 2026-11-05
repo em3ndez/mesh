@@ -8,26 +8,27 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
-import com.gentics.mesh.context.BulkActionContext;
 import com.gentics.mesh.context.InternalActionContext;
-import com.gentics.mesh.context.impl.DummyBulkActionContext;
 import com.gentics.mesh.core.data.binary.HibBinary;
 import com.gentics.mesh.core.data.node.HibNode;
 import com.gentics.mesh.core.data.node.field.HibBinaryField;
 import com.gentics.mesh.core.data.node.field.HibBooleanField;
 import com.gentics.mesh.core.data.node.field.HibDateField;
 import com.gentics.mesh.core.data.node.field.HibHtmlField;
+import com.gentics.mesh.core.data.node.field.HibJsonField;
 import com.gentics.mesh.core.data.node.field.HibNumberField;
 import com.gentics.mesh.core.data.node.field.HibStringField;
 import com.gentics.mesh.core.data.node.field.list.HibBooleanFieldList;
 import com.gentics.mesh.core.data.node.field.list.HibDateFieldList;
 import com.gentics.mesh.core.data.node.field.list.HibHtmlFieldList;
+import com.gentics.mesh.core.data.node.field.list.HibJsonFieldList;
 import com.gentics.mesh.core.data.node.field.list.HibMicronodeFieldList;
 import com.gentics.mesh.core.data.node.field.list.HibNodeFieldList;
 import com.gentics.mesh.core.data.node.field.list.HibNumberFieldList;
@@ -46,7 +47,6 @@ import com.gentics.mesh.core.rest.schema.FieldSchema;
 import com.gentics.mesh.core.rest.schema.FieldSchemaContainer;
 import com.gentics.mesh.core.rest.schema.FieldSchemaContainerVersion;
 import com.gentics.mesh.core.rest.schema.ListFieldSchema;
-import com.gentics.mesh.core.rest.schema.SchemaModel;
 
 public interface HibFieldContainer extends HibBasicFieldContainer {
 
@@ -134,16 +134,7 @@ public interface HibFieldContainer extends HibBasicFieldContainer {
 	 * 
 	 * @param fieldKey
 	 */
-	void removeField(String fieldKey, BulkActionContext bac);
-
-	/**
-	 * Remove the field with the given key and use a dummy bulk action context.
-	 * 
-	 * @param fieldKey
-	 */
-	default void removeField(String fieldKey) {
-		removeField(fieldKey, new DummyBulkActionContext());
-	}
+	void removeField(String fieldKey);
 
 	/**
 	 * Remove the field.
@@ -239,7 +230,18 @@ public interface HibFieldContainer extends HibBasicFieldContainer {
 	 * 
 	 * @return
 	 */
-	Stream<? extends HibNodeFieldContainer> getContents();
+	default Stream<? extends HibNodeFieldContainer> getContents() {
+		return getContents(true, true);
+	}
+
+	/**
+	 * Gets the HibNodeFieldContainers connected to this FieldContainer. 
+	 * For HibNodeFieldContainers this is simply the same object. 
+	 * For Micronodes this will return all contents that use this micronode.
+	 * 
+	 * @return
+	 */
+	Stream<? extends HibNodeFieldContainer> getContents(boolean lookupInFields, boolean lookupInLists);
 
 	/**
 	 * 
@@ -249,6 +251,14 @@ public interface HibFieldContainer extends HibBasicFieldContainer {
 	 * @return
 	 */
 	HibStringField getString(String key);
+
+	/**
+	 * Return the JSON object field for the given key.
+	 * 
+	 * @param key
+	 * @return
+	 */
+	HibJsonField getJson(String key);
 
 	/**
 	 * Return the binary  field for the given key.
@@ -355,6 +365,14 @@ public interface HibFieldContainer extends HibBasicFieldContainer {
 	HibNumberFieldList getNumberList(String fieldKey);
 
 	/**
+	 * Return JSOB object list.
+	 * 
+	 * @param fieldKey
+	 * @return
+	 */
+	HibJsonFieldList getJsonList(String fieldKey);
+
+	/**
 	 * Return node list.
 	 * 
 	 * @param fieldKey
@@ -427,6 +445,14 @@ public interface HibFieldContainer extends HibBasicFieldContainer {
 	HibNumberFieldList createNumberList(String fieldKey);
 
 	/**
+	 * Create a new JSON object list.
+	 * 
+	 * @param fieldKey
+	 * @return
+	 */
+	HibJsonFieldList createJsonList(String fieldKey);
+
+	/**
 	 * Create a new html list.
 	 * 
 	 * @param fieldKey
@@ -493,6 +519,14 @@ public interface HibFieldContainer extends HibBasicFieldContainer {
 	HibDateField createDate(String key);
 
 	/**
+	 * Create a new JSON object field.
+	 * 
+	 * @param key
+	 * @return
+	 */
+	HibJsonField createJson(String key);
+
+	/**
 	 * Create a new node field.
 	 * 
 	 * @param key
@@ -547,6 +581,7 @@ public interface HibFieldContainer extends HibBasicFieldContainer {
 	private Stream<HibNode> getNodeFromNodeField(FieldSchema field) {
 		return Optional.ofNullable(getNode(field.getName()))
 			.map(HibNodeField::getNode)
+			.filter(Objects::nonNull)
 			.map(Stream::of)
 			.orElseGet(Stream::empty);
 	}
@@ -577,7 +612,8 @@ public interface HibFieldContainer extends HibBasicFieldContainer {
 			return Optional.ofNullable(getNodeList(list.getName()))
 				.map(listField -> listField.getList().stream())
 				.orElseGet(Stream::empty)
-				.map(HibNodeField::getNode);
+				.map(HibNodeField::getNode)
+				.filter(Objects::nonNull);
 		} else if (type.equals(FieldTypes.MICRONODE.toString())) {
 			return Optional.ofNullable(getMicronodeList(list.getName()))
 				.map(listField -> listField.getList().stream())

@@ -27,14 +27,16 @@ import javax.inject.Inject;
 import javax.inject.Singleton;
 
 import org.apache.commons.lang3.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.gentics.elasticsearch.client.ElasticsearchClient;
 import com.gentics.elasticsearch.client.HttpErrorException;
+import com.gentics.mesh.core.data.search.Compliance;
 import com.gentics.mesh.core.data.search.IndexHandler;
 import com.gentics.mesh.core.data.search.index.IndexInfo;
 import com.gentics.mesh.core.data.search.request.Bulkable;
 import com.gentics.mesh.etc.config.MeshOptions;
-import com.gentics.mesh.etc.config.search.ComplianceMode;
 import com.gentics.mesh.etc.config.search.ElasticSearchOptions;
 import com.gentics.mesh.search.SearchMappingsCache;
 import com.gentics.mesh.search.SearchProvider;
@@ -52,8 +54,6 @@ import io.reactivex.functions.Function;
 import io.vertx.core.Vertx;
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
-import io.vertx.core.logging.Logger;
-import io.vertx.core.logging.LoggerFactory;
 
 /**
  * Elastic search provider class which implements the {@link SearchProvider} interface.
@@ -65,7 +65,7 @@ public class ElasticSearchProvider implements SearchProvider {
 
 	private final static int MAX_RETRY_ON_ERROR = 5;
 
-	private final MeshOptions options;
+	private final ElasticSearchOptions searchOptions;
 
 	private final Lazy<Vertx> vertx;
 
@@ -74,16 +74,16 @@ public class ElasticSearchProvider implements SearchProvider {
 	private Function<Throwable, CompletableSource> ignore404 = error -> isNotFoundError(error) ? Completable.complete()
 		: Completable.error(error);
 
-	private final ComplianceMode complianceMode;
+	private final Compliance compliance;
 
 	private final Lazy<SearchMappingsCache> searchMappingsCache;
 
 	@Inject
-	public ElasticSearchProvider(Lazy<Vertx> vertx, MeshOptions options, ElasticsearchClient<JsonObject> client, Lazy<SearchMappingsCache> searchMappingsCache) {
+	public ElasticSearchProvider(Lazy<Vertx> vertx, MeshOptions options, Compliance compliance, ElasticsearchClient<JsonObject> client, Lazy<SearchMappingsCache> searchMappingsCache) {
 		this.vertx = vertx;
-		this.options = options;
+		this.searchOptions = options.getSearchOptions();
 		this.client = client;
-		this.complianceMode = options.getSearchOptions().getComplianceMode();
+		this.compliance = compliance;
 		this.searchMappingsCache = searchMappingsCache;
 	}
 
@@ -122,7 +122,9 @@ public class ElasticSearchProvider implements SearchProvider {
 	public JsonObject getDefaultIndexSettings() {
 
 		JsonObject tokenizer = new JsonObject();
-		tokenizer.put("type", "nGram");
+
+		compliance.prepareTokenizer(tokenizer);
+
 		tokenizer.put("min_gram", "3");
 		tokenizer.put("max_gram", "3");
 
@@ -141,7 +143,7 @@ public class ElasticSearchProvider implements SearchProvider {
 	public Completable clear(String indexPattern) {
 		Pattern pattern = null;
 		if (indexPattern != null) {
-			indexPattern = StringUtils.removeStartIgnoreCase(indexPattern, options.getSearchOptions().getPrefix());
+			indexPattern = StringUtils.removeStartIgnoreCase(indexPattern, searchOptions.getPrefix());
 			try {
 				pattern = Pattern.compile(indexPattern);
 			} catch (PatternSyntaxException e) {
@@ -326,7 +328,7 @@ public class ElasticSearchProvider implements SearchProvider {
 			.flatMap(response -> {
 				boolean errors = response.getBoolean("errors");
 				if (errors) {
-					log.trace("Error after processing bulk:\n{}", response);
+					log.debug("Error after processing bulk:\n{}", response);
 					JsonArray items = response.getJsonArray("items");
 					for (int i = 0; i < items.size(); i++) {
 						JsonObject item = items.getJsonObject(i).getJsonObject("index");
@@ -336,7 +338,7 @@ public class ElasticSearchProvider implements SearchProvider {
 							String reason = error.getString("reason");
 							String id = item.getString("_id");
 							String index = item.getString("_index");
-							log.error("Could not store document {" + index + ":" + id + "} - " + type + " : " + reason);
+							log.error("Could not store document {" + index + ":" + id + "} - " + type + " :\n\t " + reason);
 						}
 					}
 					return Single.error(new ElasticsearchBulkResponseError(response));
@@ -361,12 +363,8 @@ public class ElasticSearchProvider implements SearchProvider {
 			.flatMapIterable(list -> list)
 			.reduce(new StringBuilder(), (builder, str) -> builder.append(str).append("\n"))
 			.map(StringBuilder::toString)
-			.doOnSuccess(bulkData -> {
-				if (log.isTraceEnabled()) {
-					log.trace("Using bulk payload:");
-					log.trace(bulkData);
-				}
-			}).flatMapCompletable(this::processBulk);
+			.doOnSuccess(bulkData -> log.trace("Using bulk payload:\n{}", bulkData))
+			.flatMapCompletable(this::processBulk);
 	}
 
 	@Override
@@ -379,8 +377,7 @@ public class ElasticSearchProvider implements SearchProvider {
 		return client.storeDocument(fullIndex, getType(), uuid, document).async()
 			.doOnSuccess(response -> {
 				if (log.isDebugEnabled()) {
-					log.debug("Added object {" + uuid + "} to index {" + fullIndex + "}. Duration " + (System.currentTimeMillis()
-						- start) + "[ms]");
+					log.debug("Added object {" + uuid + "} to index {" + fullIndex + "}. Duration " + (System.currentTimeMillis() - start) + "[ms]");
 				}
 			}).ignoreElement().compose(withTimeoutAndLog("Storing document {" + fullIndex + "} / {" + uuid + "}", true));
 	}
@@ -397,6 +394,15 @@ public class ElasticSearchProvider implements SearchProvider {
 			.doOnSuccess(response -> {
 				if (log.isDebugEnabled()) {
 					log.debug("Deleted index {" + indices + "}. Duration " + (System.currentTimeMillis() - start) + "[ms]");
+				}
+			})
+			.doOnError(e -> {
+				if (ElasticsearchErrorHelper.isNotFoundError(e) && !failOnMissingIndex) {
+					if (log.isDebugEnabled()) {
+						log.debug("Already deleted {" + indices + "}", e);
+					}
+				} else {
+					log.error("Error at deleting index {" + indices + "}", e);
 				}
 			}).ignoreElement();
 
@@ -430,7 +436,8 @@ public class ElasticSearchProvider implements SearchProvider {
 
 		String randomName = info.getIndexName() + UUIDUtil.randomUUID();
 		String templateName = randomName.toLowerCase();
-		json.put("template", templateName);
+
+		compliance.prepareTemplate(json, templateName);
 
 		return client.createIndexTemplate(templateName, json).async()
 			.doOnSuccess(response -> {
@@ -483,7 +490,7 @@ public class ElasticSearchProvider implements SearchProvider {
 	 * @return
 	 */
 	public ElasticSearchOptions getOptions() {
-		return options.getSearchOptions();
+		return searchOptions;
 	}
 
 	/**
@@ -506,8 +513,7 @@ public class ElasticSearchProvider implements SearchProvider {
 					if (error instanceof TimeoutException) {
 						log.error("The operation failed since the timeout of {" + timeout + "} ms has been reached. Action: " + msg);
 					} else {
-						log.error("Request failed {" + msg + "}", error.toString());
-						log.error(error);
+						log.error("Request failed {" + msg + "}", error);
 					}
 				});
 			return ignoreError ? t.onErrorComplete() : t;
@@ -531,7 +537,7 @@ public class ElasticSearchProvider implements SearchProvider {
 
 	@Override
 	public String installationPrefix() {
-		return options.getSearchOptions().getPrefix();
+		return searchOptions.getPrefix();
 	}
 
 	@Override
@@ -699,13 +705,6 @@ public class ElasticSearchProvider implements SearchProvider {
 	}
 
 	private String getType() {
-		switch (complianceMode) {
-		case ES_6:
-			return DEFAULT_TYPE;
-		case ES_7:
-			return null;
-		default:
-			throw new RuntimeException("Unknown compliance mode {" + complianceMode + "}");
-		}
+		return compliance.getDefaultTypeKey();
 	}
 }

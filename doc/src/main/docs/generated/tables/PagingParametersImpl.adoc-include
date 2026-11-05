@@ -7,14 +7,24 @@
 | Description
 
 
-| page
-| number  (default: 1) 
+| order
+| string
 | false
-| Number of page to be loaded.
+| Field order (ASC/DESC) to sort the result by.
+
+| page
+| number
+| false
+| Number of page to be loaded. Default: 1. 
 
 | perPage
-| number 
+| number
 | false
 | Number of elements per page.
+
+| sortBy
+| string
+| false
+| Field name to sort the result by.
 
 |======

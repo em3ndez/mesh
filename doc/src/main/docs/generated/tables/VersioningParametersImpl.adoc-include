@@ -7,14 +7,9 @@
 | Description
 
 
-| branch
-| string 
-| false
-| Specifies the branch to be used for loading data. The latest project branch will be used if this parameter is omitted.
-
 | version
-| string  (default: draft) 
+| string
 | false
-| Specifies the version to be loaded. Can either be published/draft or version number. e.g.: _0.1_, _1.0_, _draft_, _published_.
+| Specifies the version to be loaded. Can either be published/draft or version number. e.g.: _0.1_, _1.0_, _draft_, _published_. Default: draft. 
 
 |======

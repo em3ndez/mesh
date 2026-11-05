@@ -5,7 +5,7 @@
     "data" : {
       "type" : "array",
       "required" : true,
-      "description" : "Array which contains the found elements.",
+      "description" : "Array which contains the elements.",
       "items" : {
         "type" : "object",
         "id" : "urn:jsonschema:com:gentics:mesh:core:rest:microschema:impl:MicroschemaResponse",
@@ -82,6 +82,10 @@
               }
             }
           },
+          "noIndex" : {
+            "type" : "boolean",
+            "description" : "'Exclude from indexing' flag."
+          },
           "fields" : {
             "type" : "array",
             "required" : true,
@@ -90,16 +94,6 @@
               "type" : "object",
               "id" : "urn:jsonschema:com:gentics:mesh:core:rest:schema:FieldSchema",
               "properties" : {
-                "name" : {
-                  "type" : "string",
-                  "required" : true,
-                  "description" : "Name of the field."
-                },
-                "type" : {
-                  "type" : "string",
-                  "required" : true,
-                  "description" : "Type of the field."
-                },
                 "required" : {
                   "type" : "boolean"
                 },
@@ -110,9 +104,25 @@
                 "elasticsearch" : {
                   "type" : "object",
                   "$ref" : "urn:jsonschema:io:vertx:core:json:JsonObject"
+                },
+                "noIndex" : {
+                  "type" : "boolean"
+                },
+                "name" : {
+                  "type" : "string",
+                  "required" : true,
+                  "description" : "Name of the field."
+                },
+                "type" : {
+                  "type" : "string",
+                  "required" : true,
+                  "description" : "Type of the field."
                 }
               }
             }
+          },
+          "microschema" : {
+            "type" : "boolean"
           },
           "permissions" : {
             "type" : "object",
@@ -170,7 +180,6 @@
         },
         "perPage" : {
           "type" : "integer",
-          "required" : true,
           "description" : "Number of elements which can be included in a single page."
         },
         "pageCount" : {

@@ -8,6 +8,7 @@ import org.slf4j.LoggerFactory;
 
 import io.vertx.core.AbstractVerticle;
 import io.vertx.core.DeploymentOptions;
+import io.vertx.core.ThreadingModel;
 import io.vertx.core.Vertx;
 import io.vertx.core.json.JsonObject;
 
@@ -42,12 +43,12 @@ public final class DeploymentUtil {
 		if (config != null) {
 			options = new DeploymentOptions(new JsonObject().put("config", config));
 		}
-		options.setWorker(worker);
-		vertx.deployVerticle(verticle, options, handler -> {
+		options.setThreadingModel(worker ? ThreadingModel.WORKER : ThreadingModel.EVENT_LOOP);
+		vertx.deployVerticle(verticle, options).andThen(handler -> {
 			if (handler.succeeded()) {
 				String deploymentId = handler.result();
-				if (log.isInfoEnabled()) {
-					log.info("Deployed verticle {" + verticle.getClass().getName() + "} => " + deploymentId);
+				if (log.isDebugEnabled()) {
+					log.debug("Deployed verticle {" + verticle.getClass().getName() + "} => " + deploymentId);
 				}
 				fut.complete(deploymentId);
 			} else {

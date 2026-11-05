@@ -5,6 +5,10 @@ import static io.vertx.core.http.HttpHeaders.AUTHORIZATION;
 import javax.inject.Inject;
 import javax.inject.Singleton;
 
+import org.apache.commons.lang3.NotImplementedException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.gentics.mesh.auth.provider.MeshJWTAuthProvider;
 import com.gentics.mesh.cli.BootstrapInitializer;
 import com.gentics.mesh.core.data.user.MeshAuthUser;
@@ -12,21 +16,19 @@ import com.gentics.mesh.core.db.Database;
 import com.gentics.mesh.etc.config.MeshOptions;
 import com.gentics.mesh.http.MeshHeaders;
 
-import io.vertx.core.AsyncResult;
-import io.vertx.core.Handler;
+import io.vertx.core.Future;
 import io.vertx.core.http.HttpServerRequest;
-import io.vertx.core.json.JsonObject;
-import io.vertx.core.logging.Logger;
-import io.vertx.core.logging.LoggerFactory;
+import io.vertx.ext.auth.User;
 import io.vertx.ext.web.RoutingContext;
-import io.vertx.ext.web.handler.impl.AuthHandlerImpl;
+import io.vertx.ext.web.handler.impl.AuthenticationHandlerImpl;
+import io.vertx.ext.web.impl.UserContextInternal;
 
 /**
  * Auth handler which will deal with anonymous auth handling. This handler will only auth the user if anonymous auth is enabled and the request does not contain
  * any auth header.
  */
 @Singleton
-public class MeshAnonymousAuthHandler extends AuthHandlerImpl implements MeshAuthHandler {
+public class MeshAnonymousAuthHandler extends AuthenticationHandlerImpl<MeshJWTAuthProvider> implements MeshAuthHandler {
 
 	public static final String ANONYMOUS_USERNAME = "anonymous";
 
@@ -44,9 +46,10 @@ public class MeshAnonymousAuthHandler extends AuthHandlerImpl implements MeshAut
 		this.boot = boot;
 	}
 
+
 	@Override
-	public void parseCredentials(RoutingContext arg0, Handler<AsyncResult<JsonObject>> arg1) {
-		// Not needed for this handler
+	public Future<User> authenticate(RoutingContext context) {
+		throw new NotImplementedException();
 	}
 
 	@Override
@@ -92,7 +95,7 @@ public class MeshAnonymousAuthHandler extends AuthHandlerImpl implements MeshAut
 				handle401(rc);
 				return;
 			} else {
-				rc.setUser(anonymousUser);
+				((UserContextInternal) rc.userContext()).setUser(anonymousUser);
 			}
 			rc.next();
 		} else {
@@ -101,5 +104,4 @@ public class MeshAnonymousAuthHandler extends AuthHandlerImpl implements MeshAut
 		}
 
 	}
-
 }

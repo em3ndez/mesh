@@ -5,27 +5,46 @@ import static com.gentics.mesh.core.data.perm.InternalPermission.READ_PUBLISHED_
 import static com.gentics.mesh.core.rest.error.Errors.error;
 import static com.gentics.mesh.graphql.type.NodeTypeProvider.NODE_TYPE_NAME;
 import static com.gentics.mesh.graphql.type.field.MicronodeFieldTypeProvider.MICRONODE_TYPE_NAME;
-import static graphql.Scalars.GraphQLBigDecimal;
 import static graphql.Scalars.GraphQLBoolean;
 import static graphql.Scalars.GraphQLFloat;
 import static graphql.Scalars.GraphQLInt;
-import static graphql.Scalars.GraphQLLong;
 import static graphql.Scalars.GraphQLString;
+import static graphql.scalars.java.JavaPrimitives.GraphQLBigDecimal;
+import static graphql.scalars.java.JavaPrimitives.GraphQLLong;
 import static graphql.schema.GraphQLFieldDefinition.newFieldDefinition;
 import static graphql.schema.GraphQLObjectType.newObject;
 
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.CompletionStage;
+import java.util.function.BiConsumer;
+import java.util.function.Consumer;
+import java.util.function.Function;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import javax.inject.Inject;
 import javax.inject.Singleton;
 
+import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.tuple.Pair;
+import org.dataloader.BatchLoaderWithContext;
+import org.dataloader.DataLoader;
+
+import com.fasterxml.jackson.databind.JsonNode;
 import com.gentics.mesh.core.data.HibFieldContainer;
 import com.gentics.mesh.core.data.HibNodeFieldContainer;
 import com.gentics.mesh.core.data.binary.HibBinary;
+import com.gentics.mesh.core.data.binary.HibImageVariant;
+import com.gentics.mesh.core.data.branch.HibBranch;
 import com.gentics.mesh.core.data.dao.ContentDao;
 import com.gentics.mesh.core.data.node.HibMicronode;
 import com.gentics.mesh.core.data.node.HibNode;
@@ -34,11 +53,13 @@ import com.gentics.mesh.core.data.node.field.HibBinaryField;
 import com.gentics.mesh.core.data.node.field.HibBooleanField;
 import com.gentics.mesh.core.data.node.field.HibDateField;
 import com.gentics.mesh.core.data.node.field.HibHtmlField;
+import com.gentics.mesh.core.data.node.field.HibJsonField;
 import com.gentics.mesh.core.data.node.field.HibNumberField;
 import com.gentics.mesh.core.data.node.field.HibStringField;
 import com.gentics.mesh.core.data.node.field.list.HibBooleanFieldList;
 import com.gentics.mesh.core.data.node.field.list.HibDateFieldList;
 import com.gentics.mesh.core.data.node.field.list.HibHtmlFieldList;
+import com.gentics.mesh.core.data.node.field.list.HibJsonFieldList;
 import com.gentics.mesh.core.data.node.field.list.HibMicronodeFieldList;
 import com.gentics.mesh.core.data.node.field.list.HibNodeFieldList;
 import com.gentics.mesh.core.data.node.field.list.HibNumberFieldList;
@@ -51,17 +72,25 @@ import com.gentics.mesh.core.data.s3binary.S3HibBinaryField;
 import com.gentics.mesh.core.db.Tx;
 import com.gentics.mesh.core.link.WebRootLinkReplacerImpl;
 import com.gentics.mesh.core.rest.common.ContainerType;
+import com.gentics.mesh.core.rest.common.FieldTypes;
 import com.gentics.mesh.core.rest.node.field.image.FocalPoint;
 import com.gentics.mesh.core.rest.schema.FieldSchema;
 import com.gentics.mesh.core.rest.schema.ListFieldSchema;
+import com.gentics.mesh.core.result.Result;
 import com.gentics.mesh.etc.config.MeshOptions;
 import com.gentics.mesh.graphql.context.GraphQLContext;
+import com.gentics.mesh.graphql.dataloader.DataLoaderKey;
+import com.gentics.mesh.graphql.dataloader.NodeDataLoader;
+import com.gentics.mesh.graphql.dataloader.NodeDataLoader.Context;
 import com.gentics.mesh.graphql.filter.NodeFilter;
 import com.gentics.mesh.graphql.type.AbstractTypeProvider;
 import com.gentics.mesh.graphql.type.NodeTypeProvider;
+import com.gentics.mesh.json.JsonUtil;
 import com.gentics.mesh.parameter.LinkType;
 import com.gentics.mesh.util.DateUtils;
+import com.google.common.base.Functions;
 
+import graphql.scalars.ExtendedScalars;
 import graphql.schema.GraphQLFieldDefinition;
 import graphql.schema.GraphQLList;
 import graphql.schema.GraphQLObjectType;
@@ -69,22 +98,261 @@ import graphql.schema.GraphQLObjectType.Builder;
 import graphql.schema.GraphQLType;
 import graphql.schema.GraphQLTypeReference;
 import io.netty.handler.codec.http.HttpResponseStatus;
+import io.vertx.core.Promise;
+import io.vertx.core.json.JsonObject;
 
 @Singleton
 public class FieldDefinitionProvider extends AbstractTypeProvider {
 
 	public static final String BINARY_FIELD_TYPE_NAME = "BinaryField";
+	public static final String JSON_FIELD_TYPE_NAME = "JsonField";
 	public static final String S3_BINARY_FIELD_TYPE_NAME = "S3BinaryField";
 
-	@Inject
-	public MicronodeFieldTypeProvider micronodeFieldTypeProvider;
+	/**
+	 * Key for the data loader, which efficiently replaces links in contents
+	 */
+	public static final String LINK_REPLACER_DATA_LOADER_KEY = "linkReplaceLoader";
+
+	/**
+	 * Key for the data loader for boolean list field values
+	 */
+	public static final String BOOLEAN_LIST_VALUES_DATA_LOADER_KEY = "booleanListLoader";
+
+	/**
+	 * Key for the data loader for JSON object list field values
+	 */
+	public static final String JSON_LIST_VALUES_DATA_LOADER_KEY = "jsonListLoader";
+
+	/**
+	 * Key for the data loader for date list field values
+	 */
+	public static final String DATE_LIST_VALUES_DATA_LOADER_KEY = "dateListLoader";
+
+	/**
+	 * Key for the data loader for number list field values
+	 */
+	public static final String NUMBER_LIST_VALUES_DATA_LOADER_KEY = "numberListLoader";
+
+	/**
+	 * Key for the data loader for html list field values
+	 */
+	public static final String HTML_LIST_VALUES_DATA_LOADER_KEY = "htmlListLoader";
+
+	/**
+	 * Key for the data loader for string list field values
+	 */
+	public static final String STRING_LIST_VALUES_DATA_LOADER_KEY = "stringListLoader";
+
+	/**
+	 * Key for the data loader for micronode list field values
+	 */
+	public static final String MICRONODE_LIST_VALUES_DATA_LOADER_KEY = "micronodeUuidListLoader";
+
+	/**
+	 * Key for the data loader for node list field values
+	 */
+	public static final String NODE_LIST_VALUES_DATA_LOADER_KEY = "nodeUuidListLoader";
+
+	/**
+	 * Key for the data loader for micronode field values
+	 */
+	public static final String MICRONODE_DATA_LOADER_KEY = "micronodeLoader";
+
+	protected final MicronodeFieldTypeProvider micronodeFieldTypeProvider;
+
+	protected final WebRootLinkReplacerImpl linkReplacer;
+
+	/**
+	 * Partition the keys by context and call the consumer for each part
+	 * @param <T> result type
+	 * @param keyContexts map of keys to contexts
+	 * @param consumer consumer
+	 */
+	private static void partitioningByLinkTypeAndText(List<FieldDefinitionDataLoaderKey> keys, BiConsumer<Pair<LinkType, String>, Set<String>> consumer) {
+		Map<Pair<LinkType, String>, Set<String>> partitionedKeys = keys.stream()
+			.map(key -> Pair.of(Pair.of(key.linkType, key.languageTag), key.content))
+			.collect(Collectors.groupingBy(Pair::getLeft, Collectors.mapping(Pair::getRight, Collectors.toSet())));
+
+		partitionedKeys.forEach(consumer::accept);
+	}
+
+	@SuppressWarnings("unchecked")
+	private static <T> void partitioningByContext(Map<Object, Object> keyContexts, Consumer<Pair<Context, List<T>>> consumer) {
+		Map<Context, List<T>> partitionedContext = keyContexts.entrySet().stream()
+				.map(kv -> Pair.of((T) kv.getKey(), (Context) kv.getValue()))
+				.collect(Collectors.groupingBy(Pair::getValue, Collectors.mapping(Pair::getKey, Collectors.toList())));
+
+		partitionedContext.forEach((key, value) -> consumer.accept(Pair.of(key, value)));
+	}
+
+	/**
+	 * DataLoader implementation that replaces links in contents
+	 */
+	public BatchLoaderWithContext<FieldDefinitionDataLoaderKey, String> LINK_REPLACER_LOADER;
+
+	/**
+	 * Generic list field data loader
+	 * @param <U> type of the field values
+	 * @param <V> type fo the returned (rendered) field values
+	 * @param keys list of listUuids for which the field values need to be loaded
+	 * @param dataFunction function, that loads the list field values
+	 * @param transformer transformer for transforming the loaded values into the returned values (e.g. for date formatting)
+	 * @return CompletionStage for the lists of loaded list values
+	 */
+	private static <U, V> CompletionStage<List<List<V>>> listValueDataLoader(List<String> keys, Function<List<String>, Map<String,List<U>>> dataFunction, Function<List<List<U>>, List<List<V>>> transformer) {
+		Promise<List<List<V>>> promise = Promise.promise();
+
+		Map<String,List<U>> listValuesMap = dataFunction.apply(keys);
+		List<List<U>> valueLists = keys.stream().map(key -> listValuesMap.getOrDefault(key, Collections.emptyList())).collect(Collectors.toList());
+
+		promise.complete(transformer.apply(valueLists));
+		return promise.future().toCompletionStage();
+	}
+
+	/**
+	 * DataLoader implementation for values of boolean lists
+	 */
+	public BatchLoaderWithContext<String, List<Boolean>> BOOLEAN_LIST_VALUE_LOADER = (keys, environment) -> {
+		ContentDao contentDao = Tx.get().contentDao();
+		return listValueDataLoader(keys, contentDao::getBooleanListFieldValues, Functions.identity());
+	};
+
+	/**
+	 * DataLoader implementation for values of JSON object lists
+	 */
+	public BatchLoaderWithContext<String, List<JsonNode>> JSON_LIST_VALUE_LOADER = (keys, environment) -> {
+		ContentDao contentDao = Tx.get().contentDao();
+		return listValueDataLoader(keys, contentDao::getJsonListFieldValues, Functions.identity());
+	};
+
+	/**
+	 * DataLoader implementation for values of date lists
+	 */
+	public BatchLoaderWithContext<String, List<String>> DATE_LIST_VALUE_LOADER = (keys, environment) -> {
+		ContentDao contentDao = Tx.get().contentDao();
+
+		Function<List<List<Long>>, List<List<String>>> dateFormatter = orig -> {
+			return orig.stream().map(origList -> origList.stream().map(date -> DateUtils.toISO8601(date, 0)).collect(Collectors.toList())).collect(Collectors.toList());
+		};
+
+		return listValueDataLoader(keys, contentDao::getDateListFieldValues, dateFormatter);
+	};
+
+	/**
+	 * DataLoader implementation for values of number lists
+	 */
+	public BatchLoaderWithContext<String, List<Number>> NUMBER_LIST_VALUE_LOADER = (keys, environment) -> {
+		ContentDao contentDao = Tx.get().contentDao();
+		return listValueDataLoader(keys, contentDao::getNumberListFieldValues, Functions.identity());
+	};
+
+	/**
+	 * DataLoader implementation for values of string lists
+	 */
+	public BatchLoaderWithContext<String, List<String>> HTML_LIST_VALUE_LOADER = (keys, environment) -> {
+		ContentDao contentDao = Tx.get().contentDao();
+		return listValueDataLoader(keys, contentDao::getHtmlListFieldValues, Functions.identity());
+	};
+
+	/**
+	 * DataLoader implementation for values of string lists
+	 */
+	public BatchLoaderWithContext<String, List<String>> STRING_LIST_VALUE_LOADER = (keys, environment) -> {
+		ContentDao contentDao = Tx.get().contentDao();
+		return listValueDataLoader(keys, contentDao::getStringListFieldValues, Functions.identity());
+	};
+
+	/**
+	 * DataLoader implementation for values of micronode lists
+	 */
+	public BatchLoaderWithContext<String, List<HibMicronode>> MICRONODE_LIST_VALUE_LOADER = (keys, environment) -> {
+		ContentDao contentDao = Tx.get().contentDao();
+		return listValueDataLoader(keys, contentDao::getMicronodeListFieldValues, Functions.identity());
+	};
+
+	/**
+	 * DataLoader implementation for values of node lists
+	 */
+	public BatchLoaderWithContext<String, List<NodeContent>> NODE_LIST_VALUE_LOADER = (keys, environment) -> {
+		ContentDao contentDao = Tx.get().contentDao();
+		GraphQLContext context = environment.getContext();
+		HibBranch branch = Tx.get().getBranch(context);
+
+		Map<String, List<NodeContent>> resultMap = new HashMap<>();
+
+		partitioningByContext(environment.getKeyContexts(), (Pair<Context, List<String>> keysByContext) -> {
+			ContainerType type = keysByContext.getKey().getType();
+			List<String> languageTags = keysByContext.getKey().getLanguageTags();
+			resultMap.putAll(contentDao.getNodeListFieldValues(keysByContext.getValue(), context, branch.getUuid(), languageTags, type));
+		});
+
+		Promise<List<List<NodeContent>>> promise = Promise.promise();
+		List<List<NodeContent>> result = keys.stream().map(resultMap::get).collect(Collectors.toList());
+		promise.complete(result);
+		return promise.future().toCompletionStage();
+	};
+
+	/**
+	 * DataLoader implementation for micronodes
+	 */
+	public BatchLoaderWithContext<HibMicronodeField, HibMicronode> MICRONODE_LOADER = (keys, environment) -> {
+		ContentDao contentDao = Tx.get().contentDao();
+		Map<HibMicronodeField, HibMicronode> micronodes = contentDao.getMicronodes(keys);
+
+		Promise<List<HibMicronode>> promise = Promise.promise();
+		List<HibMicronode> result = keys.stream().map(field -> micronodes.get(field)).collect(Collectors.toList());
+		promise.complete(result);
+
+		return promise.future().toCompletionStage();
+	};
 
 	@Inject
-	public WebRootLinkReplacerImpl linkReplacer;
-
-	@Inject
-	public FieldDefinitionProvider(MeshOptions options) {
+	public FieldDefinitionProvider(MeshOptions options, MicronodeFieldTypeProvider micronodeFieldTypeProvider, WebRootLinkReplacerImpl linkReplacer) {
 		super(options);
+		this.micronodeFieldTypeProvider = micronodeFieldTypeProvider;
+		this.linkReplacer = linkReplacer;
+		LINK_REPLACER_LOADER = (keys, environment) -> {
+			Promise<List<String>> promise = Promise.promise();
+			GraphQLContext gc = environment.getContext();
+			String branchUuid = Tx.get().getBranch(gc).getUuid();
+			String projectName = Tx.get().getProject(gc).getName();
+
+			Map<FieldDefinitionDataLoaderKey, String> resolvedByContent = new HashMap<>();
+
+			partitioningByLinkTypeAndText(keys, (pair, contents) -> {
+				LinkType type = pair.getLeft();
+				String languageTag = pair.getRight();
+
+				Map<String, String> replacedByContent = linkReplacer.replaceMany(gc, branchUuid, null, contents, type, projectName, languageTag);
+				for (Entry<String, String> entry : replacedByContent.entrySet()) {
+					String content = entry.getKey();
+					String replaced = entry.getValue();
+
+					FieldDefinitionDataLoaderKey key = new FieldDefinitionDataLoaderKey(content, type, languageTag);
+					resolvedByContent.put(key, replaced);
+				}
+			});
+
+			List<String> resolvedContents = keys.stream().map(key -> resolvedByContent.getOrDefault(key, "")).collect(Collectors.toList());
+			promise.complete(resolvedContents);
+
+			return promise.future().toCompletionStage();
+		};
+	}
+
+	public GraphQLObjectType createJsonFieldType() {
+		Builder type = newObject().name(JSON_FIELD_TYPE_NAME).description("JSON object field");
+
+		type.field(newFieldDefinition().name("text").description("Value as JSON string").type(GraphQLString).dataFetcher(fetcher -> {
+			JsonNode json = fetcher.getSource();
+			return json == null ? null : JsonUtil.toJson(json, options.getHttpServerOptions().isMinifyJson());
+		}));
+		type.field(newFieldDefinition().name("json").description("Value as JSON object").type(ExtendedScalars.Json).dataFetcher(fetcher -> {
+			JsonNode json = fetcher.getSource();
+			return json == null ? null : json;
+		}));
+
+		return type.build();
 	}
 
 	public GraphQLObjectType createBinaryFieldType() {
@@ -121,6 +389,13 @@ public class FieldDefinitionProvider extends AbstractTypeProvider {
 				return field.getBinary().getSHA512Sum();
 			}));
 
+		// .s3objectKey
+		type.field(
+			newFieldDefinition().name("s3ObjectKey").description("S3 object key of the S3 storage binary data.").type(GraphQLString).dataFetcher(fetcher -> {
+				S3HibBinaryField field = fetcher.getSource();
+				return field.getBinary().getS3ObjectKey();
+			}));
+
 		// .fileSize
 		type.field(newFieldDefinition().name("fileSize").description("Size of the binary data in bytes").type(GraphQLLong).dataFetcher(fetcher -> {
 			HibBinaryField field = fetcher.getSource();
@@ -146,6 +421,12 @@ public class FieldDefinitionProvider extends AbstractTypeProvider {
 
 		// .plainText
 		type.field(newFieldDefinition().name("plainText").description("Extracted plain text of the uploaded document.").type(GraphQLString));
+
+		// .variants
+		type.field(newFieldDefinition().name("variants").description("Image binary manipulation variants, if applicable").type(new GraphQLList(createImageVariantType("variant"))).dataFetcher(fetcher -> {
+			HibBinaryField field = fetcher.getSource();
+			return field.getImageVariants().list();
+		}));
 
 		return type.build();
 	}
@@ -210,6 +491,82 @@ public class FieldDefinitionProvider extends AbstractTypeProvider {
 		return type.build();
 	}
 
+	public GraphQLObjectType createImageVariantType(String name) {
+		Builder type = newObject().name(name).description("Image variant");
+
+		// .width
+		type.field(newFieldDefinition().name("width").description("Variant width").type(GraphQLInt)
+			.dataFetcher(fetcher -> {
+				HibImageVariant variant = fetcher.getSource();
+				return variant.getWidth();
+			}));
+
+		// .height
+		type.field(newFieldDefinition().name("height").description("Variant height").type(GraphQLInt)
+			.dataFetcher(fetcher -> {
+				HibImageVariant variant = fetcher.getSource();
+				return variant.getHeight();
+			}));
+
+		// .cropX
+		type.field(newFieldDefinition().name("cropX").description("Variant crop X starting point").type(GraphQLInt)
+			.dataFetcher(fetcher -> {
+				HibImageVariant variant = fetcher.getSource();
+				return variant.getCropStartX();
+			}));
+
+		// .cropY
+		type.field(newFieldDefinition().name("cropY").description("Variant crop Y starting point").type(GraphQLInt)
+			.dataFetcher(fetcher -> {
+				HibImageVariant variant = fetcher.getSource();
+				return variant.getCropStartY();
+			}));
+
+		// .cropWidth
+		type.field(newFieldDefinition().name("cropWidth").description("Variant crop width").type(GraphQLInt)
+			.dataFetcher(fetcher -> {
+				HibImageVariant variant = fetcher.getSource();
+				return variant.getCropWidth();
+			}));
+
+		// .cropHeigth
+		type.field(newFieldDefinition().name("cropHeight").description("Variant crop heigth").type(GraphQLInt)
+			.dataFetcher(fetcher -> {
+				HibImageVariant variant = fetcher.getSource();
+				return variant.getCropHeight();
+			}));
+
+		// .cropMode
+		type.field(newFieldDefinition().name("cropMode").description("Variant crop mode").type(GraphQLString)
+			.dataFetcher(fetcher -> {
+				HibImageVariant variant = fetcher.getSource();
+				return String.valueOf(variant.getCropMode());
+			}));
+
+		// .resizeMode
+		type.field(newFieldDefinition().name("resizeMode").description("Variant resize mode").type(GraphQLString)
+			.dataFetcher(fetcher -> {
+				HibImageVariant variant = fetcher.getSource();
+				return String.valueOf(variant.getResizeMode());
+			}));
+
+		// .focalPoint
+		type.field(
+			newFieldDefinition().name("focalPoint").description("Focal point of the variant.").type(createFocalPointType("ImageVariantFocalPoint")).dataFetcher(fetcher -> {
+				HibImageVariant variant = fetcher.getSource();
+				return variant.getFocalPoint();
+			}));
+
+		// .focalZoom
+		type.field(newFieldDefinition().name("zoom").description("Focal zoom factor").type(GraphQLFloat)
+			.dataFetcher(fetcher -> {
+				HibImageVariant variant = fetcher.getSource();
+				return variant.getFocalPointZoom();
+			}));
+
+		return type.build();
+	}
+
 	public GraphQLObjectType createFocalPointType(String name) {
 		Builder type = newObject().name(name).description("Focal point");
 
@@ -258,6 +615,17 @@ public class FieldDefinitionProvider extends AbstractTypeProvider {
 		}).build();
 	}
 
+	public GraphQLFieldDefinition createJsonDef(FieldSchema schema) {
+		return newFieldDefinition().name(schema.getName()).description(schema.getLabel()).type(new GraphQLTypeReference(JSON_FIELD_TYPE_NAME)).dataFetcher(env -> {
+			HibFieldContainer container = env.getSource();
+			HibJsonField jsonField = container.getJson(schema.getName());
+			if (jsonField != null) {
+				return jsonField.getJson();
+			}
+			return null;
+		}).build();
+	}
+
 	public GraphQLFieldDefinition createNumberDef(FieldSchema schema) {
 		return newFieldDefinition().name(schema.getName()).description(schema.getLabel()).type(GraphQLBigDecimal).dataFetcher(env -> {
 			HibFieldContainer container = env.getSource();
@@ -279,8 +647,13 @@ public class FieldDefinitionProvider extends AbstractTypeProvider {
 					GraphQLContext gc = env.getContext();
 					LinkType type = getLinkType(env);
 					String content = htmlField.getHTML();
-					return linkReplacer.replace(gc, tx.getBranch(gc)
-						.getUuid(), null, content, type, tx.getProject(gc).getName(), Arrays.asList(container.getLanguageTag()));
+
+					if (type != null && type != LinkType.OFF) {
+						DataLoader<FieldDefinitionDataLoaderKey, String> linkedContentLoader = env.getDataLoader(FieldDefinitionProvider.LINK_REPLACER_DATA_LOADER_KEY);
+						return linkedContentLoader.load(new FieldDefinitionDataLoaderKey(content, type, container.getLanguageTag()));
+					} else {
+						return content;
+					}
 				}
 				return null;
 			}).build();
@@ -296,8 +669,13 @@ public class FieldDefinitionProvider extends AbstractTypeProvider {
 					GraphQLContext gc = env.getContext();
 					LinkType type = getLinkType(env);
 					String content = field.getString();
-					return linkReplacer.replace(gc, tx.getBranch(gc)
-						.getUuid(), null, content, type, tx.getProject(gc).getName(), Arrays.asList(container.getLanguageTag()));
+
+					if (type != null && type != LinkType.OFF) {
+						DataLoader<FieldDefinitionDataLoaderKey, String> linkedContentLoader = env.getDataLoader(FieldDefinitionProvider.LINK_REPLACER_DATA_LOADER_KEY);
+						return linkedContentLoader.load(new FieldDefinitionDataLoaderKey(content, type, container.getLanguageTag()));
+					} else {
+						return content;
+					}
 				}
 				return null;
 			}).build();
@@ -321,132 +699,240 @@ public class FieldDefinitionProvider extends AbstractTypeProvider {
 	 * @param schema
 	 * @return
 	 */
-	public GraphQLFieldDefinition createListDef(GraphQLContext context, ListFieldSchema schema) {
+	public Optional<GraphQLFieldDefinition> createListDef(GraphQLContext context, ListFieldSchema schema, HibProject project) {
+		if ("micronode".equals(schema.getListType()) 
+				&& context.<Result<?>>getOrStore(
+						MicronodeFieldTypeProvider.MICROSCHEMAS, 
+						() -> Tx.get().microschemaDao().findAll(project))
+				.isEmpty()) {
+			return Optional.empty();
+		}
 		GraphQLType type = getElementTypeOfList(schema);
 		graphql.schema.GraphQLFieldDefinition.Builder fieldType = newFieldDefinition()
 			.name(schema.getName())
 			.description(schema.getLabel())
 			.type(new GraphQLList(type))
-			.argument(createPagingArgs());
+			.argument(createPagingArgs(false));
 		NodeFilter nodeFilter = NodeFilter.filter(context);
 
 		// Add link resolving arg to html and string lists
-		switch (schema.getListType()) {
-		case "html":
-		case "string":
+		switch (FieldTypes.valueByName(schema.getListType())) {
+		case HTML:
+		case STRING:
+		case JSON:
 			fieldType.argument(createLinkTypeArg());
 			break;
-		case "node":
+		case NODE:
 			fieldType.argument(createNodeVersionArg());
 			fieldType.argument(nodeFilter.createFilterArgument());
 			break;
+		default:
+			break;
 		}
 
-		return fieldType.dataFetcher(env -> {
+		fieldType.dataFetcher(env -> {
 			Tx tx = Tx.get();
 			ContentDao contentDao = tx.contentDao();
 			HibFieldContainer container = env.getSource();
 			GraphQLContext gc = env.getContext();
 
-			switch (schema.getListType()) {
-			case "boolean":
+			switch (FieldTypes.valueByName(schema.getListType())) {
+			case BOOLEAN:
 				HibBooleanFieldList booleanList = container.getBooleanList(schema.getName());
 				if (booleanList == null) {
 					return null;
 				}
-				return booleanList.getList().stream().map(item -> item.getBoolean()).collect(Collectors.toList());
-			case "html":
+
+				String booleanListUuid = booleanList.getUuid();
+				if (contentDao.supportsPrefetchingListFieldValues() && !StringUtils.isEmpty(booleanListUuid)) {
+					DataLoader<String, List<Boolean>> booleanListValueLoader = env.getDataLoader(FieldDefinitionProvider.BOOLEAN_LIST_VALUES_DATA_LOADER_KEY);
+					return booleanListValueLoader.load(booleanListUuid);
+				} else {
+					return booleanList.getList().stream().map(item -> item.getBoolean()).collect(Collectors.toList());
+				}
+			case JSON:
+				HibJsonFieldList jsonList = container.getJsonList(schema.getName());
+				if (jsonList == null) {
+					return null;
+				}
+
+				String jsonListUuid = jsonList.getUuid();
+				if (contentDao.supportsPrefetchingListFieldValues() && !StringUtils.isEmpty(jsonListUuid)) {
+					DataLoader<String, List<JsonObject>> jsonListValueLoader = env.getDataLoader(FieldDefinitionProvider.JSON_LIST_VALUES_DATA_LOADER_KEY);
+					return jsonListValueLoader.load(jsonListUuid);
+				} else {
+					return jsonList.getList();
+				}
+			case HTML:
 				HibHtmlFieldList htmlList = container.getHTMLList(schema.getName());
 				if (htmlList == null) {
 					return null;
 				}
-				return htmlList.getList().stream().map(item -> {
-					String content = item.getHTML();
+
+				String htmlListUuid = htmlList.getUuid();
+				if (contentDao.supportsPrefetchingListFieldValues() && !StringUtils.isEmpty(htmlListUuid)) {
 					LinkType linkType = getLinkType(env);
-					return linkReplacer.replace(gc, null, null, content, linkType, tx.getProject(gc).getName(),
-						Arrays.asList(container.getLanguageTag()));
-				}).collect(Collectors.toList());
-			case "string":
+					DataLoader<String, List<String>> htmlListValueLoader = env.getDataLoader(FieldDefinitionProvider.HTML_LIST_VALUES_DATA_LOADER_KEY);
+
+					if (linkType != null && linkType != LinkType.OFF) {
+						String projectName = tx.getProject(gc).getName();
+						List<String> languageTags = Arrays.asList(container.getLanguageTag());
+						return htmlListValueLoader.load(htmlListUuid).thenApply(contents -> {
+							return contents.stream().map(content -> linkReplacer.replace(gc, null, null, content,
+									linkType, projectName, languageTags)).collect(Collectors.toList());
+						});
+					} else {
+						return htmlListValueLoader.load(htmlListUuid);
+					}
+				} else {
+					return htmlList.getList().stream().map(item -> {
+						String content = item.getHTML();
+						LinkType linkType = getLinkType(env);
+						return linkReplacer.replace(gc, null, null, content, linkType, tx.getProject(gc).getName(),
+								Arrays.asList(container.getLanguageTag()));
+					}).collect(Collectors.toList());
+				}
+			case STRING:
 				HibStringFieldList stringList = container.getStringList(schema.getName());
 				if (stringList == null) {
 					return null;
 				}
-				return stringList.getList().stream().map(item -> {
-					String content = item.getString();
+
+				String stringListUuid = stringList.getUuid();
+				if (contentDao.supportsPrefetchingListFieldValues() && !StringUtils.isEmpty(stringListUuid)) {
 					LinkType linkType = getLinkType(env);
-					return linkReplacer.replace(gc, null, null, content, linkType, tx.getProject(gc).getName(),
-						Arrays.asList(container.getLanguageTag()));
-				}).collect(Collectors.toList());
-			case "number":
+					DataLoader<String, List<String>> stringListValueLoader = env.getDataLoader(FieldDefinitionProvider.STRING_LIST_VALUES_DATA_LOADER_KEY);
+
+					if (linkType != null && linkType != LinkType.OFF) {
+						String projectName = tx.getProject(gc).getName();
+						List<String> languageTags = Arrays.asList(container.getLanguageTag());
+						return stringListValueLoader.load(stringListUuid).thenApply(contents -> {
+							return contents.stream().map(content -> linkReplacer.replace(gc, null, null, content,
+									linkType, projectName, languageTags)).collect(Collectors.toList());
+						});
+					} else {
+						return stringListValueLoader.load(stringListUuid);
+					}
+				} else {
+					return stringList.getList().stream().map(item -> {
+						String content = item.getString();
+						LinkType linkType = getLinkType(env);
+						return linkReplacer.replace(gc, null, null, content, linkType, tx.getProject(gc).getName(),
+								Arrays.asList(container.getLanguageTag()));
+					}).collect(Collectors.toList());
+				}
+			case NUMBER:
 				HibNumberFieldList numberList = container.getNumberList(schema.getName());
 				if (numberList == null) {
 					return null;
 				}
-				return numberList.getList().stream().map(item -> item.getNumber()).collect(Collectors.toList());
-			case "date":
+
+				String numberListUuid = numberList.getUuid();
+				if (contentDao.supportsPrefetchingListFieldValues() && !StringUtils.isEmpty(numberListUuid)) {
+					DataLoader<String, List<Number>> numberListValueLoader = env.getDataLoader(FieldDefinitionProvider.NUMBER_LIST_VALUES_DATA_LOADER_KEY);
+					return numberListValueLoader.load(numberListUuid);
+				} else {
+					return numberList.getList().stream().map(item -> item.getNumber()).collect(Collectors.toList());
+				}
+			case DATE:
 				HibDateFieldList dateList = container.getDateList(schema.getName());
 				if (dateList == null) {
 					return null;
 				}
-				return dateList.getList().stream().map(item -> DateUtils.toISO8601(item.getDate(), 0)).collect(Collectors.toList());
-			case "node":
+
+				String dateListUuid = dateList.getUuid();
+				if (contentDao.supportsPrefetchingListFieldValues() && !StringUtils.isEmpty(dateListUuid)) {
+					DataLoader<String, List<String>> dateListValueLoader = env.getDataLoader(FieldDefinitionProvider.DATE_LIST_VALUES_DATA_LOADER_KEY);
+					return dateListValueLoader.load(dateListUuid);
+				} else {
+					return dateList.getList().stream().map(item -> DateUtils.toISO8601(item.getDate(), 0)).collect(Collectors.toList());
+				}
+			case NODE:
 				HibNodeFieldList nodeList = container.getNodeList(schema.getName());
 				if (nodeList == null) {
 					return null;
 				}
 				Map<String, ?> filterArgument = env.getArgument("filter");
 				ContainerType nodeType = getNodeVersion(env);
-
-				Stream<NodeContent> nodes = nodeList.getList().stream().map(item -> {
-					HibNode node = item.getNode();
-					List<String> languageTags;
-					if (container instanceof HibNodeFieldContainer) {
-						languageTags = Arrays.asList(container.getLanguageTag());
-					} else if (container instanceof HibMicronode) {
-						HibMicronode micronode = (HibMicronode) container;
-						languageTags = Arrays.asList(micronode.getContainer().getLanguageTag());
-					} else {
-						throw error(HttpResponseStatus.INTERNAL_SERVER_ERROR, "container can only be NodeGraphFieldContainer or Micronode");
-					}
-					// TODO we need to add more assertions and check what happens if the itemContainer is null
-					HibNodeFieldContainer itemContainer = contentDao.findVersion(node, gc, languageTags, nodeType);
-					return new NodeContent(node, itemContainer, languageTags, nodeType);
-				});
-				if (filterArgument != null) {
-					nodes = nodes.filter(nodeFilter.createPredicate(filterArgument));
+				List<String> languageTags;
+				if (container instanceof HibNodeFieldContainer) {
+					languageTags = Arrays.asList(container.getLanguageTag());
+				} else if (container instanceof HibMicronode) {
+					HibMicronode micronode = (HibMicronode) container;
+					languageTags = Arrays.asList(micronode.getContainer().getLanguageTag());
+				} else {
+					throw error(HttpResponseStatus.INTERNAL_SERVER_ERROR, "container can only be NodeGraphFieldContainer or Micronode");
 				}
-				return nodes
-					.filter(content -> content.getContainer() != null)
-					.filter(gc::hasReadPerm)
-					.collect(Collectors.toList());
-			case "micronode":
+				NodeDataLoader.Context nodeContext = new NodeDataLoader.Context(nodeType, languageTags, Optional.empty(), getPagingInfo(env));
+
+				String nodeListUuid = nodeList.getUuid();
+
+				if (contentDao.supportsPrefetchingListFieldValues() && !StringUtils.isEmpty(nodeListUuid)) {
+					DataLoader<String, List<NodeContent>> nodeListValueLoader = env.getDataLoader(FieldDefinitionProvider.NODE_LIST_VALUES_DATA_LOADER_KEY);
+					return nodeListValueLoader.load(nodeListUuid, nodeContext).thenApply(nodeContents -> {
+						if (filterArgument != null) {
+							Predicate<NodeContent> predicate = nodeFilter.createPredicate(filterArgument);
+							nodeContents.removeIf(predicate.negate());
+						}
+						return nodeContents
+								.stream()
+								.filter(content -> content.getContainer() != null)
+								.filter(content1 -> gc.hasReadPerm(content1, nodeType))
+								.collect(Collectors.toList());
+					});
+				} else {
+					Stream<NodeContent> nodes = nodeList.getList().stream().map(item -> {
+						HibNode node = item.getNode();
+						if (node == null) {
+							return null;
+						}
+						HibNodeFieldContainer itemContainer = contentDao.findVersion(node, gc, languageTags, nodeType);
+						return new NodeContent(node, itemContainer, languageTags, nodeType);
+					}).filter(Objects::nonNull);
+					if (filterArgument != null) {
+						nodes = nodes.filter(nodeFilter.createPredicate(filterArgument));
+					}
+					return nodes
+						.filter(content -> content.getContainer() != null)
+						.filter(content1 -> gc.hasReadPerm(content1, nodeType))
+						.collect(Collectors.toList());
+				}
+			case MICRONODE:
 				HibMicronodeFieldList micronodeList = container.getMicronodeList(schema.getName());
 				if (micronodeList == null) {
 					return null;
 				}
-				return micronodeList.getList().stream().map(item -> item.getMicronode()).collect(Collectors.toList());
+
+				String micronodeListUuid = micronodeList.getUuid();
+				if (contentDao.supportsPrefetchingListFieldValues() && !StringUtils.isEmpty(micronodeListUuid)) {
+					DataLoader<String, List<HibMicronode>> micronodeListValueLoader = env.getDataLoader(FieldDefinitionProvider.MICRONODE_LIST_VALUES_DATA_LOADER_KEY);
+					return micronodeListValueLoader.load(micronodeListUuid);
+				} else {
+					return micronodeList.getList().stream().map(item -> item.getMicronode()).collect(Collectors.toList());
+				}
 			default:
 				return null;
 			}
-		}).build();
+		});
+		return Optional.of(fieldType.build());
 	}
 
 	private GraphQLType getElementTypeOfList(ListFieldSchema schema) {
-		switch (schema.getListType()) {
-		case "boolean":
+		switch (FieldTypes.valueByName(schema.getListType())) {
+		case BOOLEAN:
 			return GraphQLBoolean;
-		case "html":
+		case DATE:
+		case HTML:
+		case STRING:
 			return GraphQLString;
-		case "string":
-			return GraphQLString;
-		case "number":
+		case NUMBER:
 			return GraphQLBigDecimal;
-		case "date":
-			return GraphQLString;
-		case "node":
-			return new GraphQLTypeReference("Node");
-		case "micronode":
-			return new GraphQLTypeReference("Micronode");
+		case NODE:
+			return new GraphQLTypeReference(NODE_TYPE_NAME);
+		case MICRONODE:
+			return new GraphQLTypeReference(MICRONODE_TYPE_NAME);
+		case JSON:
+			return new GraphQLTypeReference(JSON_FIELD_TYPE_NAME);
 		default:
 			return null;
 		}
@@ -459,16 +945,24 @@ public class FieldDefinitionProvider extends AbstractTypeProvider {
 	 * @param project
 	 * @return Created field definition
 	 */
-	public GraphQLFieldDefinition createMicronodeDef(FieldSchema schema, HibProject project) {
-		return newFieldDefinition().name(schema.getName()).description(schema.getLabel()).type(new GraphQLTypeReference(MICRONODE_TYPE_NAME))
-			.dataFetcher(env -> {
-				HibFieldContainer container = env.getSource();
-				HibMicronodeField micronodeField = container.getMicronode(schema.getName());
-				if (micronodeField != null) {
-					return micronodeField.getMicronode();
-				}
-				return null;
-			}).build();
+	public Optional<GraphQLFieldDefinition> createMicronodeDef(GraphQLContext context, FieldSchema schema, HibProject project) {
+		if (context.<Result<?>>getOrStore(MicronodeFieldTypeProvider.MICROSCHEMAS + project.getName(), () -> Tx.get().microschemaDao().findAll(project)).isEmpty()) {
+			return Optional.empty();
+		} else {
+			return Optional.of(newFieldDefinition().name(schema.getName())
+					.description(schema.getLabel())
+					.type(new GraphQLTypeReference(MICRONODE_TYPE_NAME))
+					.dataFetcher(env -> {
+						HibFieldContainer container = env.getSource();
+						HibMicronodeField micronodeField = container.getMicronode(schema.getName());
+						if (micronodeField != null) {
+
+							DataLoader<HibMicronodeField, HibMicronode> micronodeLoader = env.getDataLoader(MICRONODE_DATA_LOADER_KEY);
+							return micronodeLoader.load(micronodeField);
+						}
+						return null;
+					}).build());
+		}
 	}
 
 	/**
@@ -484,7 +978,6 @@ public class FieldDefinitionProvider extends AbstractTypeProvider {
 			.argument(createNodeVersionArg())
 			.description(schema.getLabel())
 			.type(new GraphQLTypeReference(NODE_TYPE_NAME)).dataFetcher(env -> {
-				ContentDao contentDao = Tx.get().contentDao();
 				GraphQLContext gc = env.getContext();
 				HibFieldContainer source = env.getSource();
 				ContainerType type = getNodeVersion(env);
@@ -492,18 +985,72 @@ public class FieldDefinitionProvider extends AbstractTypeProvider {
 				// TODO decide whether we want to reference the default content by default
 				HibNodeField nodeField = source.getNode(schema.getName());
 				if (nodeField != null) {
-					HibNode node = nodeField.getNode();
-					if (node != null) {
-						//Note that we would need to check for micronodes which are not language specific!
-						List<String> languageTags = getLanguageArgument(env, source);
-						// Check permissions for the linked node
-						gc.requiresPerm(node, READ_PERM, READ_PUBLISHED_PERM);
-						HibNodeFieldContainer container = contentDao.findVersion(node, gc, languageTags, type);
-						return NodeTypeProvider.createNodeContentWithSoftPermissions(env, gc, node, languageTags, type, container);
+					DataLoader<DataLoaderKey<HibNodeField>, NodeContent> nodeReferenceLoader = env.getDataLoader(NodeDataLoader.NODE_REFERENCE_LOADER_KEY);
+
+					//Note that we would need to check for micronodes which are not language specific!
+					List<String> languageTags = getLanguageArgument(env, source);
+					NodeDataLoader.Context context = new NodeDataLoader.Context(type, languageTags, Optional.empty(), getPagingInfo(env));
+
+					return nodeReferenceLoader.load(new DataLoaderKey<>(env, nodeField), context)
+							.thenApply(nodeContent -> {
+								if (nodeContent != null && nodeContent.getNode() != null) {
+									gc.requiresPerm(nodeContent.getNode(), READ_PERM, READ_PUBLISHED_PERM);
+									return NodeTypeProvider.createNodeContentWithSoftPermissions(env, gc,
+											nodeContent.getNode(), nodeContent.getLanguageFallback(),
+											nodeContent.getType(), nodeContent.getContainer());
+								} else {
+									return null;
+								}
+							});
 					}
-				}
 				return null;
 			}).build();
 	}
 
+	/**
+	 * Keys for the DataLoader (containing content, link type and language)
+	 */
+	public static class FieldDefinitionDataLoaderKey {
+		/**
+		 * Content
+		 */
+		protected final String content;
+
+		/**
+		 * Link Type
+		 */
+		protected final LinkType linkType;
+
+		/**
+		 * Language
+		 */
+		protected final String languageTag;
+
+		/**
+		 * Create an instance
+		 * @param content content
+		 * @param linkType link type
+		 * @param languageTag language
+		 */
+		public FieldDefinitionDataLoaderKey(String content, LinkType linkType, String languageTag) {
+			this.content = content;
+			this.linkType = linkType;
+			this.languageTag = languageTag;
+		}
+
+		@Override
+		public boolean equals(Object obj) {
+			if (obj instanceof FieldDefinitionDataLoaderKey) {
+				FieldDefinitionDataLoaderKey other = (FieldDefinitionDataLoaderKey) obj;
+				return other.linkType == linkType && StringUtils.equals(other.languageTag, languageTag) && StringUtils.equals(other.content, content);
+			} else {
+				return false;
+			}
+		}
+
+		@Override
+		public int hashCode() {
+			return Objects.hash(content, linkType, languageTag);
+		}
+	}
 }

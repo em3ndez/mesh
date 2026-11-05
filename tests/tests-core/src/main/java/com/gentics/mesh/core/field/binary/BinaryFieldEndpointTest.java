@@ -1,5 +1,7 @@
 package com.gentics.mesh.core.field.binary;
 
+import static com.gentics.mesh.assertj.MeshAssertions.assertThat;
+import static com.gentics.mesh.core.rest.job.JobStatus.COMPLETED;
 import static com.gentics.mesh.test.ClientHelper.call;
 import static com.gentics.mesh.test.TestDataProvider.PROJECT_NAME;
 import static io.netty.handler.codec.http.HttpResponseStatus.BAD_REQUEST;
@@ -8,25 +10,37 @@ import static io.netty.handler.codec.http.HttpResponseStatus.NOT_FOUND;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
+import java.io.BufferedOutputStream;
 import java.io.ByteArrayInputStream;
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
+import java.util.Random;
+import java.util.function.Predicate;
 
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.IOUtils;
+import org.apache.commons.lang3.RandomStringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.junit.Before;
 import org.junit.Test;
 
 import com.gentics.mesh.core.data.HibNodeFieldContainer;
 import com.gentics.mesh.core.data.dao.ContentDao;
+import com.gentics.mesh.core.data.job.HibJob;
 import com.gentics.mesh.core.data.node.HibNode;
 import com.gentics.mesh.core.db.Tx;
 import com.gentics.mesh.core.field.AbstractFieldEndpointTest;
@@ -42,7 +56,9 @@ import com.gentics.mesh.core.rest.schema.impl.BinaryFieldSchemaImpl;
 import com.gentics.mesh.core.rest.schema.impl.SchemaResponse;
 import com.gentics.mesh.core.rest.schema.impl.SchemaUpdateRequest;
 import com.gentics.mesh.json.JsonUtil;
+import com.gentics.mesh.parameter.ImageManipulationParameters;
 import com.gentics.mesh.parameter.image.CropMode;
+import com.gentics.mesh.parameter.image.ResizeMode;
 import com.gentics.mesh.parameter.impl.ImageManipulationParametersImpl;
 import com.gentics.mesh.parameter.impl.VersioningParametersImpl;
 import com.gentics.mesh.rest.client.MeshBinaryResponse;
@@ -61,6 +77,30 @@ public class BinaryFieldEndpointTest extends AbstractFieldEndpointTest {
 	private static final String FIELD_NAME = "binaryField";
 
 	/**
+	 * Predicate to filter out directories belonging to the old binaryImageCache structure
+	 */
+	private static final Predicate<Path> IS_OLD_STRUCTURE = p -> {
+		File f = p.toFile();
+		if (!f.isDirectory()) {
+			f = f.getParentFile();
+		}
+
+		return f.isDirectory() && StringUtils.length(f.getName()) == 8;
+	};
+
+	/**
+	 * Predicate to filter out directories belonging to the new binaryImageCache structure
+	 */
+	private static final Predicate<Path> IS_NEW_STRUCTURE = p ->  {
+		File f = p.toFile();
+		if (!f.isDirectory()) {
+			f = f.getParentFile();
+		}
+
+		return f.isDirectory() && StringUtils.length(f.getName()) == 2;
+	};
+
+	/**
 	 * Update the schema and add a binary field.
 	 * 
 	 * @throws IOException
@@ -71,7 +111,7 @@ public class BinaryFieldEndpointTest extends AbstractFieldEndpointTest {
 	}
 
 	private void setSchema(boolean isRequired) throws IOException {
-		try (Tx tx = tx()) {
+		tx(tx -> {
 			// add non restricted string field
 			BinaryFieldSchema binaryFieldSchema = new BinaryFieldSchemaImpl();
 			binaryFieldSchema.setName(FIELD_NAME);
@@ -79,8 +119,7 @@ public class BinaryFieldEndpointTest extends AbstractFieldEndpointTest {
 			binaryFieldSchema.setRequired(isRequired);
 			prepareTypedSchema(schemaContainer("folder"), List.of(binaryFieldSchema), Optional.empty());
 			prepareTypedSchema(folder("2015"), binaryFieldSchema, true);
-			tx.success();
-		}
+		});
 	}
 
 	@Override
@@ -336,6 +375,136 @@ public class BinaryFieldEndpointTest extends AbstractFieldEndpointTest {
 		assertNotEquals("Downloaded binary must be different", hash, hash2);
 	}
 
+	@Test
+	public void testCacheMigration() throws IOException {
+		String imageCache = options().getImageOptions().getImageCacheDirectory();
+
+		for (String img: Arrays.asList("blume.jpg", "dreamtime.jpg", "iphone-gps.jpg", "android-gps.jpg")) {
+			byte[] bytes = getBinary("/pictures/" + img);
+
+			NodeResponse nodeResponse = createBinaryNode();
+
+			call(() -> client().updateNodeBinaryField(PROJECT_NAME, nodeResponse.getUuid(), "en", nodeResponse.getVersion(), "binary",
+				new ByteArrayInputStream(bytes), bytes.length, img,"image/jpg"));
+		}
+		tx(tx -> {
+			tx.binaryDao().findAll().runInExistingTx(tx).forEach(binary -> {
+				try {
+					Path baseFolder = createOldBinaryImageCacheStructure(imageCache, binary.getSHA512Sum());
+					String baseName = "image-" + randomImageManipulation().getCacheKey() + ".jpg";
+					try (InputStream i = binary.openBlockingStream().get(); OutputStream o = new BufferedOutputStream(new FileOutputStream(new File(baseFolder.toFile(), baseName).toString()))) {
+						i.transferTo(o);
+					}
+				} catch (Exception e) {
+					throw new RuntimeException(e);
+				}
+			});
+
+			// also create an empty folder structure (old structure)
+			createOldBinaryImageCacheStructure(imageCache, createRandomSha512Sum());
+
+			// and create a folder structure for a binary, which does not exist
+			Path baseFolder = createOldBinaryImageCacheStructure(imageCache, createRandomSha512Sum());
+			String baseName = "image-" + randomImageManipulation().getCacheKey() + ".jpg";
+			new File(baseFolder.toFile(), baseName).createNewFile();
+		});
+		assertThat(Files.walk(Path.of(imageCache)).filter(path -> {
+			File file = new File(path.toString());
+			return file.exists() && file.isFile() && file.getName().startsWith("image-");
+		}).count()).isEqualTo(5);
+		assertThat(Files.walk(Path.of(imageCache)).filter(path -> {
+			File file = new File(path.toString());
+			return file.exists() && file.isFile() && file.getName().endsWith(".jpg");
+		}).count()).isEqualTo(5);
+
+		grantAdmin();
+		HibJob job = tx(tx -> { return tx.jobDao().enqueueImageCacheMigration(user()); });
+		String jobUuid = tx(() -> job.getUuid());
+
+		waitForJob(() -> {
+			call(() -> client().processJob(jobUuid));
+		}, jobUuid, COMPLETED);
+
+		revokeAdmin();
+
+		assertThat(Files.walk(Path.of(imageCache)).filter(path -> {
+			File file = new File(path.toString());
+			return file.exists() && file.isFile() && file.getName().startsWith("image-");
+		}).count()).isEqualTo(0);
+		assertThat(Files.walk(Path.of(imageCache)).filter(path -> {
+			File file = new File(path.toString());
+			return file.exists() && file.isFile() && file.getName().endsWith(".jpg");
+		}).count()).isEqualTo(4);
+
+		assertThat(Files.walk(Path.of(imageCache)).filter(IS_OLD_STRUCTURE)).as("Directories/Files in binaryImageCache of the old structure").isEmpty();
+	}
+
+	/**
+	 * Create a random sha512sum
+	 * @return sha512sum
+	 */
+	protected String createRandomSha512Sum() {
+		Buffer dummyContent = Buffer.buffer(RandomStringUtils.random(100));
+		return com.gentics.mesh.util.FileUtils.hash(dummyContent).blockingGet();
+	}
+
+	/**
+	 * Create the old folder structure for the given sha512sum
+	 * @param imageCache base image cache directory
+	 * @param sha512sum sha512sum
+	 * @return path to the deepest folder
+	 * @throws IOException
+	 */
+	protected Path createOldBinaryImageCacheStructure(String imageCache, String sha512sum) throws IOException {
+		String[] parts = sha512sum.split("(?<=\\G.{8})");
+		StringBuffer buffer = new StringBuffer();
+		buffer.append(File.separator);
+		for (String part : parts) {
+			buffer.append(part + File.separator);
+		}
+		Path dir = Paths.get(imageCache, buffer.toString());
+		Files.createDirectories(dir);
+		return dir;
+	}
+
+	/**
+	 * Test that getting an image variant of an existing binary will put the file into the new structure of the binaryImageCache, but not the old one
+	 * @throws IOException
+	 */
+	@Test
+	public void testImageCacheUsage() throws IOException {
+		String imageCache = options().getImageOptions().getImageCacheDirectory();
+
+		// assert that image cache directory is empty
+		assertThat(Files.list(Path.of(imageCache))).as("Directories/Files in binaryImageCache").isEmpty();
+
+		// first create an image
+		byte[] bytes = getBinary("/pictures/blume.jpg");
+		NodeResponse nodeResponse = createBinaryNode();
+		call(() -> client().updateNodeBinaryField(PROJECT_NAME, nodeResponse.getUuid(), "en", nodeResponse.getVersion(), "binary",
+			new ByteArrayInputStream(bytes), bytes.length, "blume.jpg","image/jpg"));
+
+		// assert that image cache directory is still empty
+		assertThat(Files.list(Path.of(imageCache))).as("Directories/Files in binaryImageCache").isEmpty();
+
+		// get a resized variant of the image
+		call(() -> client().downloadBinaryField(PROJECT_NAME, nodeResponse.getUuid(), "en", "binary", randomImageManipulation()));
+
+		// assert that the image cache contains exactly two (nested) directories of the new structure, but none of the old structure
+		assertThat(Files.walk(Path.of(imageCache)).filter(IS_OLD_STRUCTURE)).as("Directories/Files in binaryImageCache of the old structure").isEmpty();
+		assertThat(Files.walk(Path.of(imageCache)).filter(IS_NEW_STRUCTURE)).as("Directories/Files in binaryImageCache of the new structure").hasSize(3);
+	}
+
+	private ImageManipulationParameters randomImageManipulation() {
+		Random rnd = new Random();
+		return new ImageManipulationParametersImpl()
+				.setCropMode(CropMode.values()[rnd.nextInt(CropMode.values().length)])
+				.setFocalPoint(1f / (rnd.nextInt(8)+1), 1f / (rnd.nextInt(8)+1))
+				.setResizeMode(ResizeMode.values()[rnd.nextInt(ResizeMode.values().length)])
+				.setWidth(rnd.nextInt(options().getImageOptions().getMaxWidth()))
+				.setHeight(rnd.nextInt(options().getImageOptions().getMaxHeight()));
+	}
+
 	private String hashBinary(MeshRequest<MeshBinaryResponse> downloadBinaryField) throws IOException {
 		return DigestUtils.md5Hex(downloadBinaryField.blockingGet().getStream());
 	}
@@ -404,7 +573,23 @@ public class BinaryFieldEndpointTest extends AbstractFieldEndpointTest {
 		call(() -> client().transformNodeBinaryField(PROJECT_NAME, updatedResponse.getUuid(), updatedResponse.getLanguage(), updatedResponse.getVersion(),
 			"binary", new ImageManipulationParametersImpl().setWidth(250)),
 			NOT_FOUND, "node_error_binary_data_not_found");
+
+		call(() -> client().deleteNode(PROJECT_NAME, createResponse.getUuid()));
 	}
+
+	@Test
+    public void testTransformBinarySuccessful() throws IOException {
+		String fileName = "blume.jpg";
+		byte[] bytes = getBinary("/pictures/blume.jpg");
+		NodeResponse createResponse = createBinaryNode();
+        //creating
+        call(() -> client().updateNodeBinaryField(PROJECT_NAME, createResponse.getUuid(), "en", createResponse.getVersion(), "binary",
+    			new ByteArrayInputStream(bytes), bytes.length, fileName, "image/jpg"));
+        //uploading
+        NodeResponse call = call(() -> client().transformNodeBinaryField(PROJECT_NAME, createResponse.getUuid(), "en", "draft", "binary", new ImageManipulationParametersImpl().setWidth(250)));
+        assertNotNull(call);
+        assertEquals(250, call.getFields().getBinaryField("binary").getWidth().intValue());
+    }
 
 	@Test
 	public void testUploadEmptyFile() {
@@ -433,5 +618,35 @@ public class BinaryFieldEndpointTest extends AbstractFieldEndpointTest {
 		} catch (Exception e) {
 			assertTrue(e.getMessage().indexOf("Error:400 in POST") > -1);
 		}
+	}
+
+	/**
+	 * Test uploading binary data without publishing
+	 */
+	@Test
+	public void testUploadAndDoNotPublish() {
+		String uuid = tx(() -> folder("2015").getUuid());
+		Buffer buffer = TestUtils.randomBuffer(1000);
+		VersionNumber version = tx(tx -> { return tx.contentDao().getFieldContainer(folder("2015"), "en").getVersion(); });
+		NodeResponse updated = call(() -> client().updateNodeBinaryField(PROJECT_NAME, uuid, "en", version.toString(), FIELD_NAME,
+			new ByteArrayInputStream(buffer.getBytes()), buffer.length(), "filename.txt",
+			"application/binary"));
+
+		assertThat(updated).hasVersion("1.1").hasLanguageVariant("en", true);
+	}
+
+	/**
+	 * Test uploading binary data and publishing
+	 */
+	@Test
+	public void testUploadAndPublish() {
+		String uuid = tx(() -> folder("2015").getUuid());
+		Buffer buffer = TestUtils.randomBuffer(1000);
+		VersionNumber version = tx(tx -> { return tx.contentDao().getFieldContainer(folder("2015"), "en").getVersion(); });
+		NodeResponse updated = call(() -> client().updateNodeBinaryField(PROJECT_NAME, uuid, "en", version.toString(), FIELD_NAME,
+			new ByteArrayInputStream(buffer.getBytes()), buffer.length(), "filename.txt",
+			"application/binary", true));
+
+		assertThat(updated).hasVersion("2.0").hasLanguageVariant("en", true);
 	}
 }

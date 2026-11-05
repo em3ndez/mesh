@@ -9,6 +9,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -17,10 +19,11 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 
-import javax.inject.Inject;
-
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.StringUtils;
+import org.slf4j.ILoggerFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 
 import com.fasterxml.jackson.core.JsonParseException;
@@ -30,6 +33,7 @@ import com.gentics.mesh.Mesh;
 import com.gentics.mesh.MeshVersion;
 import com.gentics.mesh.cache.CacheRegistry;
 import com.gentics.mesh.changelog.highlevel.HighLevelChangelogSystem;
+import com.gentics.mesh.context.BulkActionContext;
 import com.gentics.mesh.core.data.HibLanguage;
 import com.gentics.mesh.core.data.HibMeshVersion;
 import com.gentics.mesh.core.data.dao.GroupDao;
@@ -44,9 +48,12 @@ import com.gentics.mesh.core.data.schema.HibSchema;
 import com.gentics.mesh.core.data.search.IndexHandler;
 import com.gentics.mesh.core.data.service.ServerSchemaStorageImpl;
 import com.gentics.mesh.core.data.user.HibUser;
+import com.gentics.mesh.core.db.CommonTx;
 import com.gentics.mesh.core.db.Database;
 import com.gentics.mesh.core.db.Tx;
-import com.gentics.mesh.core.endpoint.admin.LocalConfigApi;
+import com.gentics.mesh.core.endpoint.admin.LocalConfigApiImpl;
+import com.gentics.mesh.core.rest.MeshEvent;
+import com.gentics.mesh.core.rest.job.JobType;
 import com.gentics.mesh.core.rest.schema.BinaryFieldSchema;
 import com.gentics.mesh.core.rest.schema.HtmlFieldSchema;
 import com.gentics.mesh.core.rest.schema.SchemaVersionModel;
@@ -64,6 +71,7 @@ import com.gentics.mesh.etc.config.AuthenticationOptions;
 import com.gentics.mesh.etc.config.DebugInfoOptions;
 import com.gentics.mesh.etc.config.MeshOptions;
 import com.gentics.mesh.etc.config.MonitoringConfig;
+import com.gentics.mesh.event.EventBusStore;
 import com.gentics.mesh.monitor.liveness.EventBusLivenessManager;
 import com.gentics.mesh.monitor.liveness.LivenessManager;
 import com.gentics.mesh.plugin.manager.MeshPluginManager;
@@ -73,6 +81,7 @@ import com.gentics.mesh.search.SearchProvider;
 import com.gentics.mesh.search.TrackingSearchProvider;
 import com.gentics.mesh.search.verticle.eventhandler.SyncEventHandler;
 import com.gentics.mesh.util.MavenVersionNumber;
+import com.hazelcast.internal.util.XmlUtil;
 
 import ch.qos.logback.classic.LoggerContext;
 import ch.qos.logback.classic.encoder.PatternLayoutEncoder;
@@ -82,18 +91,19 @@ import ch.qos.logback.core.rolling.RollingFileAppender;
 import ch.qos.logback.core.rolling.SizeBasedTriggeringPolicy;
 import ch.qos.logback.core.util.FileSize;
 import dagger.Lazy;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.reactivex.Completable;
 import io.reactivex.Observable;
 import io.vertx.core.Vertx;
+import io.vertx.core.VertxBuilder;
 import io.vertx.core.VertxOptions;
 import io.vertx.core.eventbus.EventBus;
 import io.vertx.core.eventbus.EventBusOptions;
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
-import io.vertx.core.logging.Logger;
-import io.vertx.core.logging.LoggerFactory;
 import io.vertx.core.metrics.MetricsOptions;
 import io.vertx.core.spi.cluster.ClusterManager;
+import io.vertx.micrometer.MicrometerMetricsFactory;
 
 /**
  * @see BootstrapInitializer
@@ -109,63 +119,49 @@ public abstract class AbstractBootstrapInitializer implements BootstrapInitializ
 
 	private static final String ADMIN_USERNAME = "admin";
 
-	@Inject
-	public ServerSchemaStorageImpl schemaStorage;
+	protected final ServerSchemaStorageImpl schemaStorage;
 
-	@Inject
-	public Database db;
+	protected final Database db;
 
-	@Inject
-	public SearchProvider searchProvider;
+	protected final SearchProvider searchProvider;
 
-	@Inject
-	public BCryptPasswordEncoder encoder;
+	protected final BCryptPasswordEncoder encoder;
 
-	@Inject
-	public DistributedEventManager eventManager;
+	protected final DistributedEventManager eventManager;
 
-	@Inject
-	public Lazy<IndexHandlerRegistryImpl> indexHandlerRegistry;
+	protected final Lazy<IndexHandlerRegistryImpl> indexHandlerRegistry;
 
-	@Inject
-	public Lazy<CoreVerticleLoader> loader;
+	protected final Lazy<CoreVerticleLoader> loader;
 
-	@Inject
-	public HighLevelChangelogSystem highlevelChangelogSystem;
+	protected final HighLevelChangelogSystem highlevelChangelogSystem;
 
-	@Inject
-	public CacheRegistry cacheRegistry;
+	protected final CacheRegistry cacheRegistry;
 
-	@Inject
-	public MeshPluginManager pluginManager;
+	protected final MeshPluginManager pluginManager;
 
-	@Inject
-	public MeshOptions options;
+	protected final MeshOptions options;
 
-	@Inject
-	public RouterStorageRegistryImpl routerStorageRegistry;
+	protected final RouterStorageRegistryImpl routerStorageRegistry;
 
-	@Inject
-	public MetricsOptions metricsOptions;
+	protected final MetricsOptions metricsOptions;
 
-	@Inject
-	public LocalConfigApi localConfigApi;
+	protected final MeterRegistry meterRegistry;
 
-	@Inject
-	public BCryptPasswordEncoder passwordEncoder;
+	protected final LocalConfigApiImpl localConfigApi;
 
-	@Inject
-	public MasterElector coordinatorMasterElector;
+	protected final BCryptPasswordEncoder passwordEncoder;
 
-	@Inject
-	public LivenessManager liveness;
+	protected final MasterElector coordinatorMasterElector;
 
-	@Inject
-	public EventBusLivenessManager eventbusLiveness;
+	protected final LivenessManager liveness;
+
+	protected final EventBusLivenessManager eventbusLiveness;
+
+	protected final EventBusStore eventBusStore;
 
 	// TODO: Changing the role name or deleting the role would cause code that utilizes this field to break.
 	// This is however a rare case.
-	protected HibRole anonymousRole;
+	protected String anonymousRoleUuid;
 
 	protected MeshImpl mesh;
 
@@ -179,8 +175,43 @@ public abstract class AbstractBootstrapInitializer implements BootstrapInitializ
 
 	private ClusterManager clusterManager;
 
-	protected AbstractBootstrapInitializer() {
+	protected AbstractBootstrapInitializer(ServerSchemaStorageImpl schemaStorage, Database db,
+			SearchProvider searchProvider, BCryptPasswordEncoder encoder, DistributedEventManager eventManager,
+			Lazy<IndexHandlerRegistryImpl> indexHandlerRegistry, Lazy<CoreVerticleLoader> loader,
+			HighLevelChangelogSystem highlevelChangelogSystem, CacheRegistry cacheRegistry, MeterRegistry meterRegistry,
+			MeshPluginManager pluginManager, MeshOptions options, RouterStorageRegistryImpl routerStorageRegistry,
+			MetricsOptions metricsOptions, LocalConfigApiImpl localConfigApi, BCryptPasswordEncoder passwordEncoder,
+			MasterElector coordinatorMasterElector, LivenessManager liveness, EventBusLivenessManager eventbusLiveness,
+			EventBusStore eventBusStore) {
+		this.schemaStorage = schemaStorage;
+		this.db = db;
+		this.searchProvider = searchProvider;
+		this.encoder = encoder;
+		this.eventManager = eventManager;
+		this.indexHandlerRegistry = indexHandlerRegistry;
+		this.loader = loader;
+		this.highlevelChangelogSystem = highlevelChangelogSystem;
+		this.cacheRegistry = cacheRegistry;
+		this.pluginManager = pluginManager;
+		this.options = options;
+		this.routerStorageRegistry = routerStorageRegistry;
+		this.metricsOptions = metricsOptions;
+		this.meterRegistry = meterRegistry;
+		this.localConfigApi = localConfigApi;
+		this.passwordEncoder = passwordEncoder;
+		this.coordinatorMasterElector = coordinatorMasterElector;
+		this.liveness = liveness;
+		this.eventbusLiveness = eventbusLiveness;
+		this.eventBusStore = eventBusStore;
 		clearReferences();
+	}
+
+	/**
+	 * Get the core verticle loader
+	 * @return loader
+	 */
+	public CoreVerticleLoader getCoreVerticleLoader() {
+		return loader.get();
 	}
 
 	/**
@@ -188,9 +219,9 @@ public abstract class AbstractBootstrapInitializer implements BootstrapInitializ
 	 *
 	 * @param flags
 	 * @param configuration
-	 *            Mesh configuration
+	 *			Mesh configuration
 	 * @param isJoiningCluster
-	 *            Flag which indicates that the instance is joining the cluster. In those cases various checks must not be invoked.
+	 *			Flag which indicates that the instance is joining the cluster. In those cases various checks must not be invoked.
 	 * @return True if an empty installation was detected, false if existing data was found
 	 * @throws Exception
 	 */
@@ -243,7 +274,7 @@ public abstract class AbstractBootstrapInitializer implements BootstrapInitializ
 				adminUser.setLastEditedTimestamp();
 
 				String pw = config.getInitialAdminPassword();
-				if (pw != null) {
+				if (StringUtils.isNotBlank(pw)) {
 					StringBuffer sb = new StringBuffer();
 					String hash = passwordEncoder.encode(pw);
 					sb.append("-----------------------\n");
@@ -370,6 +401,9 @@ public abstract class AbstractBootstrapInitializer implements BootstrapInitializ
 
 	@Override
 	public void init(Mesh mesh, boolean forceResync, MeshOptions options, MeshCustomLoader<Vertx> verticleLoader) throws Exception {
+		// since we use xerces, we need to set this to "true"
+		System.setProperty(XmlUtil.SYSTEM_PROPERTY_IGNORE_XXE_PROTECTION_FAILURES, "true");
+
 		this.mesh = (MeshImpl) mesh;
 		PostProcessFlags flags = new PostProcessFlags(forceResync, false);
 
@@ -403,7 +437,9 @@ public abstract class AbstractBootstrapInitializer implements BootstrapInitializ
 			// Finally fire the startup event and log that bootstrap has completed
 			log.info("Sending startup completed event to {" + STARTUP + "}");
 			vertx.eventBus().publish(STARTUP.address, true);
-		}, log::error);
+		}, e -> {
+			log.error("Error at plugin files deployment", e);
+		});
 
 		if (initialPasswordInfo != null) {
 			System.out.println(initialPasswordInfo);
@@ -423,40 +459,46 @@ public abstract class AbstractBootstrapInitializer implements BootstrapInitializ
 		if (!debugInfoOptions.isLogEnabled()) {
 			return;
 		}
-		String logFolder = debugInfoOptions.getLogFolder();
 		// This requires that slf4j is actually used.
-		LoggerContext lc = (LoggerContext) org.slf4j.LoggerFactory.getILoggerFactory();
-		ch.qos.logback.classic.Logger rootLogger = lc.getLogger(ROOT_LOGGER_NAME);
+		ILoggerFactory lf = org.slf4j.LoggerFactory.getILoggerFactory();
+		if (lf instanceof LoggerContext lc) {
+			String logFolder = debugInfoOptions.getLogFolder();
+			ch.qos.logback.classic.Logger rootLogger = lc.getLogger(ROOT_LOGGER_NAME);
 
-		RollingFileAppender<ILoggingEvent> appender = new RollingFileAppender<>();
-		appender.setFile(Paths.get(logFolder, "debuginfo.log").toString());
-		appender.setContext(lc);
+			RollingFileAppender<ILoggingEvent> appender = new RollingFileAppender<>();
+			appender.setFile(Paths.get(logFolder, "debuginfo.log").toString());
+			appender.setContext(lc);
 
-		SizeBasedTriggeringPolicy<ILoggingEvent> triggeringPolicy = new SizeBasedTriggeringPolicy<>();
-		triggeringPolicy.setMaxFileSize(FileSize.valueOf(debugInfoOptions.getLogFileSize()));
-		triggeringPolicy.setContext(lc);
+			SizeBasedTriggeringPolicy<ILoggingEvent> triggeringPolicy = new SizeBasedTriggeringPolicy<>();
+			triggeringPolicy.setMaxFileSize(FileSize.valueOf(debugInfoOptions.getLogFileSize()));
+			triggeringPolicy.setContext(lc);
 
-		FixedWindowRollingPolicy rollingPolicy = new FixedWindowRollingPolicy();
+			FixedWindowRollingPolicy rollingPolicy = new FixedWindowRollingPolicy();
 
-		rollingPolicy.setMinIndex(1);
-		rollingPolicy.setMaxIndex(1);
-		rollingPolicy.setFileNamePattern(Paths.get(logFolder, "debuginfo.%i.log").toString());
-		rollingPolicy.setParent(appender);
-		rollingPolicy.setContext(lc);
+			rollingPolicy.setMinIndex(1);
+			rollingPolicy.setMaxIndex(1);
+			rollingPolicy.setFileNamePattern(Paths.get(logFolder, "debuginfo.%i.log").toString());
+			rollingPolicy.setParent(appender);
+			rollingPolicy.setContext(lc);
 
-		PatternLayoutEncoder encoder = new PatternLayoutEncoder();
-		encoder.setPattern(debugInfoOptions.getLogPattern());
-		encoder.setContext(lc);
+			PatternLayoutEncoder encoder = new PatternLayoutEncoder();
+			encoder.setPattern(debugInfoOptions.getLogPattern());
+			encoder.setContext(lc);
 
-		appender.setRollingPolicy(rollingPolicy);
-		appender.setTriggeringPolicy(triggeringPolicy);
-		appender.setEncoder(encoder);
+			appender.setRollingPolicy(rollingPolicy);
+			appender.setTriggeringPolicy(triggeringPolicy);
+			appender.setEncoder(encoder);
 
-		rootLogger.addAppender(appender);
-		triggeringPolicy.start();
-		rollingPolicy.start();
-		encoder.start();
-		appender.start();
+			rootLogger.addAppender(appender);
+			triggeringPolicy.start();
+			rollingPolicy.start();
+			encoder.start();
+			appender.start();
+			log.info("Debug info runtime logging initialized.");
+		} else {
+			log.warn("The provided SLF4J implementor [{}] is not of a type [ch.qos.logback.classic.LoggerContext]."
+					+ " The debug info will not contain the runtime logs.", debugInfoOptions);
+		}
 	}
 
 	/**
@@ -496,7 +538,7 @@ public abstract class AbstractBootstrapInitializer implements BootstrapInitializ
 					throw new RuntimeException("Could not read {" + keyFile + "}");
 				}
 			} else {
-				log.warn("Keyfile {" + keyFile + "} not found. Not loading keys..");
+				log.warn("Keyfile {" + keyFile + "} not found. Not loading keys.");
 			}
 		}
 	}
@@ -511,7 +553,7 @@ public abstract class AbstractBootstrapInitializer implements BootstrapInitializ
 	 * the IP of the local network adapter that is routed into the Internet.
 	 *
 	 * @param destination
-	 *            The remote host name or IP
+	 *			The remote host name or IP
 	 * @return An IP of a local network adapter
 	 */
 	protected String getLocalIpForRoutedRemoteIP(String destination) {
@@ -519,7 +561,7 @@ public abstract class AbstractBootstrapInitializer implements BootstrapInitializ
 			byte[] ipBytes = InetAddress.getByName(destination).getAddress();
 
 			try (DatagramSocket datagramSocket = new DatagramSocket()) {
-				datagramSocket.connect(InetAddress.getByAddress(ipBytes), 0);
+				datagramSocket.connect(InetAddress.getByAddress(ipBytes), 10002);
 				return datagramSocket.getLocalAddress().getHostAddress();
 			}
 		} catch (Exception e) {
@@ -535,26 +577,20 @@ public abstract class AbstractBootstrapInitializer implements BootstrapInitializ
 	 */
 	public void initVertx(MeshOptions options) {
 		VertxOptions vertxOptions = new VertxOptions();
-		vertxOptions.getEventBusOptions().setClustered(options.getClusterOptions().isEnabled());
 		vertxOptions.setWorkerPoolSize(options.getVertxOptions().getWorkerPoolSize());
 		vertxOptions.setEventLoopPoolSize(options.getVertxOptions().getEventPoolSize());
 
-		MonitoringConfig monitoringOptions = options.getMonitoringOptions();
-		if (monitoringOptions != null && monitoringOptions.isEnabled()) {
-			log.info("Enabling Vert.x metrics");
-			vertxOptions.setMetricsOptions(metricsOptions);
-		}
 		boolean logActivity = LoggerFactory.getLogger(EventBus.class).isDebugEnabled();
 		vertxOptions.getEventBusOptions().setLogActivity(logActivity);
 		vertxOptions.setPreferNativeTransport(true);
 		System.setProperty("vertx.cacheDirBase", options.getTempDirectory());
 		Vertx vertx = null;
-		if (vertxOptions.getEventBusOptions().isClustered()) {
+		if (options.getClusterOptions().isEnabled()) {
 			log.info("Creating clustered Vert.x instance");
 			vertx = createClusteredVertx(options, vertxOptions);
 		} else {
 			log.info("Creating non-clustered Vert.x instance");
-			vertx = Vertx.vertx(vertxOptions);
+			vertx = createNonClusteredVertx(options, vertxOptions);
 		}
 		if (vertx.isNativeTransportEnabled()) {
 			log.info("Running with native transports enabled");
@@ -563,6 +599,7 @@ public abstract class AbstractBootstrapInitializer implements BootstrapInitializ
 		}
 
 		this.vertx = vertx;
+		this.eventBusStore.setEventBus(vertx.eventBus());
 	}
 
 	/**
@@ -604,13 +641,31 @@ public abstract class AbstractBootstrapInitializer implements BootstrapInitializ
 		// Handle admin password reset
 		String password = configuration.getAdminPassword();
 		if (password != null) {
-			// wait for writeQuorum, then update/create the admin user
-			db().clusterManager().waitUntilWriteQuorumReached().andThen(doWithLock(GLOBAL_CHANGELOG_LOCK_KEY,
-					"setting admin password", ensureAdminUser(password), 60 * 1000)).subscribe();
+			// wait for DB being ready, then update/create the admin user
+			doWithLock(GLOBAL_CHANGELOG_LOCK_KEY,
+					"setting admin password", ensureAdminUser(password), 60 * 1000).subscribe();
 		}
 
 		registerEventHandlers();
 
+		checkImageCacheMigrated();
+	}
+
+	@Deprecated
+	private void checkImageCacheMigrated() throws IOException {
+		Path imageCachePath = Path.of(options.getImageOptions().getImageCacheDirectory());
+		if (Files.exists(imageCachePath) && Files.list(imageCachePath).filter(path -> path.getFileName().toString().length() == 8).count() > 0) {
+			db().singleTx(tx -> {
+				log.info("Image cache requires migration, triggering the corresponding Job.");
+				BulkActionContext bac = tx.<CommonTx>unwrap().data().getOrCreateBulkActionContext();
+				tx.jobDao().findAll().stream().filter(job -> job.getType() == JobType.imagecache).forEach(job -> {
+					tx.jobDao().delete(job);
+				});
+				tx.jobDao().enqueueImageCacheMigration(tx.userDao().findByUsername("admin"));
+				MeshEvent.triggerJobWorker(mesh);
+				return bac;
+			}).doOnSuccess(bac -> bac.process(true)).subscribe();
+		}
 	}
 
 	/**
@@ -697,6 +752,7 @@ public abstract class AbstractBootstrapInitializer implements BootstrapInitializ
 			// SNAPSHOT -> RELEASE
 			boolean isSnapshotUpgrade = diff == -1 && graph.compareTo(current, false) == 0 && graph.isSnapshot() && !current.isSnapshot();
 
+			//TODO Shouldn't this be documented or clearly optionated?
 			boolean ignoreSnapshotUpgrade = System.getProperty("ignoreSnapshotUpgradeCheck") != null;
 			if (ignoreSnapshotUpgrade) {
 				log.warn(
@@ -709,10 +765,9 @@ public abstract class AbstractBootstrapInitializer implements BootstrapInitializ
 				}
 			}
 			if (isSnapshotUpgrade && !ignoreSnapshotUpgrade) {
-				log.error("You are currently trying to run release version {" + currentVersion
-					+ "} but your instance was last run using a snapshot version. {" + graphVersion
-					+ "}. Running this version could cause unforseen errors.");
-				throw new RuntimeException("Downgrade not allowed");
+				throw new RuntimeException("You are currently trying to run release version {" + currentVersion
+						+ "} but your instance was last run using a snapshot version. {" + graphVersion
+						+ "}. Running this version could cause unforseen errors.");
 			}
 
 			boolean isVersionDowngrade = diff >= 1;
@@ -760,13 +815,13 @@ public abstract class AbstractBootstrapInitializer implements BootstrapInitializ
 	 */
 	@Override
 	public HibRole anonymousRole() {
-		if (anonymousRole == null) {
+		if (anonymousRoleUuid == null) {
 			synchronized (BootstrapInitializer.class) {
 				// Load the role if it has not been yet loaded
-				anonymousRole = Tx.get().roleDao().findByName("anonymous");
+				anonymousRoleUuid = Tx.get().roleDao().findByName("anonymous").getUuid();
 			}
 		}
-		return anonymousRole;
+		return Tx.get().roleDao().findByUuid(anonymousRoleUuid);
 	}
 
 	/**
@@ -774,7 +829,7 @@ public abstract class AbstractBootstrapInitializer implements BootstrapInitializ
 	 */
 	@Override
 	public void clearReferences() {
-		anonymousRole = null;
+		anonymousRoleUuid = null;
 	}
 
 	@Override
@@ -868,12 +923,13 @@ public abstract class AbstractBootstrapInitializer implements BootstrapInitializ
 					log.debug("Created anonymous group {" + anonymousGroup.getUuid() + "}");
 				}
 
-				anonymousRole = roleDao.findByName("anonymous");
+				HibRole anonymousRole = roleDao.findByName("anonymous");
 				if (anonymousRole == null) {
 					anonymousRole = roleDao.create("anonymous", anonymousUser);
 					groupDao.addRole(anonymousGroup, anonymousRole);
 					log.debug("Created anonymous role {" + anonymousRole.getUuid() + "}");
 				}
+				anonymousRoleUuid = anonymousRole.getUuid();
 
 				tx.success();
 			});
@@ -884,9 +940,9 @@ public abstract class AbstractBootstrapInitializer implements BootstrapInitializ
 	 * Create languages in the set, which do not exist yet
 	 *
 	 * @param root
-	 *            language root
+	 *			language root
 	 * @param languageSet
-	 *            language set
+	 *			language set
 	 */
 	protected void initLanguageSet(LanguageDao root, LanguageSet languageSet) {
 		for (Map.Entry<String, LanguageEntry> entry : languageSet.entrySet()) {
@@ -952,16 +1008,36 @@ public abstract class AbstractBootstrapInitializer implements BootstrapInitializ
 	protected abstract void initOptionalData(Tx tx, boolean isEmptyInstallation);
 
 	/**
+	 * Create a non-clustered vert.x instance.
+	 *
+	 * @param options
+	 *			Mesh options
+	 * @param vertxOptions
+	 *			Vert.x options
+	 */
+	protected Vertx createNonClusteredVertx(MeshOptions options, VertxOptions vertxOptions) {
+		VertxBuilder builder = Vertx.builder();
+
+		MonitoringConfig monitoringOptions = options.getMonitoringOptions();
+		if (monitoringOptions != null && monitoringOptions.isEnabled()) {
+			log.info("Enabling Vert.x metrics");
+			vertxOptions.setMetricsOptions(metricsOptions);
+			builder.withMetrics(new MicrometerMetricsFactory(meterRegistry));
+		}
+
+		return builder.with(vertxOptions).build();
+	}
+
+	/**
 	 * Create a clustered vert.x instance and block until the instance has been created.
 	 *
 	 * @param options
-	 *            Mesh options
+	 *			Mesh options
 	 * @param vertxOptions
-	 *            Vert.x options
+	 *			Vert.x options
 	 */
 	protected Vertx createClusteredVertx(MeshOptions options, VertxOptions vertxOptions) {
 		clusterManager = db.clusterManager().getVertxClusterManager();
-		vertxOptions.setClusterManager(clusterManager);
 		String localIp = options.getClusterOptions().getNetworkHost();
 
 		Integer clusterPort = options.getClusterOptions().getVertxPort();
@@ -979,7 +1055,16 @@ public abstract class AbstractBootstrapInitializer implements BootstrapInitializ
 			log.debug("Binding Vert.x on host {" + localIp + "}");
 		}
 		CompletableFuture<Vertx> fut = new CompletableFuture<>();
-		Vertx.clusteredVertx(vertxOptions, rh -> {
+		VertxBuilder builder = Vertx.builder().withClusterManager(clusterManager);
+
+		MonitoringConfig monitoringOptions = options.getMonitoringOptions();
+		if (monitoringOptions != null && monitoringOptions.isEnabled()) {
+			log.info("Enabling Vert.x metrics");
+			vertxOptions.setMetricsOptions(metricsOptions);
+			builder.withMetrics(new MicrometerMetricsFactory(meterRegistry));
+		}
+
+		builder.with(vertxOptions).buildClustered().andThen(rh -> {
 			log.info("Created clustered Vert.x instance");
 			if (rh.failed()) {
 				Throwable cause = rh.cause();
@@ -993,7 +1078,7 @@ public abstract class AbstractBootstrapInitializer implements BootstrapInitializ
 		try {
 			return fut.get(getClusteredVertxInitializationTimeoutInSeconds(), SECONDS);
 		} catch (Exception e) {
-			throw new RuntimeException("Error while creating clusterd Vert.x instance");
+			throw new RuntimeException("Error while creating clusterd Vert.x instance", e);
 		}
 	}
 

@@ -20,9 +20,10 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
+import java.util.function.Consumer;
+
 import org.junit.Test;
 
-import com.gentics.mesh.context.BulkActionContext;
 import com.gentics.mesh.context.InternalActionContext;
 import com.gentics.mesh.context.impl.InternalRoutingActionContextImpl;
 import com.gentics.mesh.core.data.dao.GroupDao;
@@ -41,6 +42,7 @@ import com.gentics.mesh.core.db.CommonTx;
 import com.gentics.mesh.core.db.Tx;
 import com.gentics.mesh.core.rest.common.Permission;
 import com.gentics.mesh.core.rest.common.PermissionInfo;
+import com.gentics.mesh.core.rest.error.GenericRestException;
 import com.gentics.mesh.core.rest.user.UserReference;
 import com.gentics.mesh.core.rest.user.UserResponse;
 import com.gentics.mesh.error.InvalidArgumentException;
@@ -287,8 +289,7 @@ public class UserTest extends AbstractMeshTest implements BasicObjectTestcases {
 			assertTrue(user.isEnabled());
 			assertNotNull(user);
 			String uuid = user.getUuid();
-			BulkActionContext bac = createBulkContext();
-			userDao.delete(user, bac);
+			userDao.delete(user);
 			HibUser foundUser = userDao.findByUuid(uuid);
 			assertNull(foundUser);
 		}
@@ -477,11 +478,10 @@ public class UserTest extends AbstractMeshTest implements BasicObjectTestcases {
 
 			assertEquals(1, userDao.getGroups(user).count());
 			assertTrue(user.isEnabled());
-			BulkActionContext bac = createBulkContext();
 
 			HibUser userToDelete = userDao.create("username", user);
 			HibUser foundUser = userDao.findByUuid(userToDelete.getUuid());
-			assertNotNull(foundUser);userDao.delete(userToDelete, bac);
+			assertNotNull(foundUser);userDao.delete(userToDelete);
 			foundUser = userDao.findByUuid(userToDelete.getUuid());
 			assertNull(foundUser);
 		}
@@ -579,6 +579,7 @@ public class UserTest extends AbstractMeshTest implements BasicObjectTestcases {
 		try (Tx tx = tx()) {
 			GroupDao groupDao = tx.groupDao();
 			UserDao userDao= tx.userDao();
+			InternalActionContext ac = mockActionContext();
 
 			HibUser oldUser = user();
 			HibUser newUser = userDao.create("newuser", oldUser);
@@ -588,9 +589,9 @@ public class UserTest extends AbstractMeshTest implements BasicObjectTestcases {
 			groupDao.addUser(newGroup, newUser);
 
 			// Both groups have the same roles, so the hashes must match.
-			assertEquals(userDao.getRolesHash(oldUser), userDao.getRolesHash(newUser));
+			assertEquals(userDao.getRolesHash(oldUser, ac), userDao.getRolesHash(newUser, ac));
 
-			String hash = userDao.getRolesHash(oldUser);
+			String hash = userDao.getRolesHash(oldUser, ac);
 
 			// Add another role to the groups only oldUser is in.
 			grantAdmin();
@@ -599,9 +600,81 @@ public class UserTest extends AbstractMeshTest implements BasicObjectTestcases {
 			newUser = userDao.findByUuid(newUser.getUuid());
 
 			// The roles have changed for oldUser ...
-			assertNotEquals(hash, userDao.getRolesHash(oldUser));
+			assertNotEquals(hash, userDao.getRolesHash(oldUser, ac));
 			// ... but NOT for newUser.
-			assertEquals(hash, userDao.getRolesHash(newUser));
+			assertEquals(hash, userDao.getRolesHash(newUser, ac));
+		}
+	}
+
+	@Test
+	public void createWithEmptyPassword() {
+		createWithPassword("   ", e -> {
+			if (e instanceof GenericRestException) {
+				assertEquals(((GenericRestException) e).getI18nKey(), "user_missing_password");
+			} else {
+				throw new RuntimeException(e);
+			}
+		});
+	}
+
+	@Test
+	public void createWithNullPassword() {
+		createWithPassword(null, e -> {
+			if (e instanceof GenericRestException) {
+				assertEquals(((GenericRestException) e).getI18nKey(), "user_missing_password");
+			} else {
+				throw new RuntimeException(e);
+			}
+		});
+	}
+
+
+	@Test
+	public void updateWithEmptyPassword() {
+		HibUser user = createWithPassword("random", e -> {
+			throw new RuntimeException(e);
+		});
+		updateWithPassword(user, "       ", e -> {
+			if (e instanceof GenericRestException) {
+				assertEquals(((GenericRestException) e).getI18nKey(), "user_missing_password");
+			} else {
+				throw new RuntimeException(e);
+			}
+		});
+	}
+
+	@Test
+	public void updateWithNullPassword() {
+		HibUser user = createWithPassword("random", e -> {
+			throw new RuntimeException(e);
+		});
+		updateWithPassword(user, null, e -> {
+			if (e instanceof GenericRestException) {
+				assertEquals(((GenericRestException) e).getI18nKey(), "user_missing_password");
+			} else {
+				throw new RuntimeException(e);
+			}
+		});
+	}
+
+	protected HibUser createWithPassword(String password, Consumer<Exception> exceptionConsumer) {
+		try (Tx tx = tx()) {
+			UserDao userDao = tx.userDao();
+			HibUser user = userDao.create("user" + Long.toHexString(System.currentTimeMillis()), user());
+			return userDao.setPassword(user, password);
+		} catch (Exception e) {
+			exceptionConsumer.accept(e);
+			return null;
+		}
+	}
+
+	protected HibUser updateWithPassword(HibUser user, String password, Consumer<Exception> exceptionConsumer) {
+		try (Tx tx = tx()) {
+			UserDao userDao = tx.userDao();
+			return userDao.setPassword(user, password);
+		} catch (Exception e) {
+			exceptionConsumer.accept(e);
+			return null;
 		}
 	}
 }

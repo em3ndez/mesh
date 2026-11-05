@@ -1,13 +1,19 @@
 package com.gentics.mesh.dagger.module;
 
 import com.gentics.mesh.core.jobs.BranchJobProcessor;
+import com.gentics.mesh.core.jobs.ConsistencyCheckJobProcessor;
+import com.gentics.mesh.core.jobs.ConsistencyRepairJobProcessor;
+import com.gentics.mesh.core.jobs.ImageCacheMigrationProcessor;
 import com.gentics.mesh.core.jobs.JobProcessor;
 import com.gentics.mesh.core.jobs.JobProcessorImpl;
 import com.gentics.mesh.core.jobs.MicronodeJobProcessor;
+import com.gentics.mesh.core.jobs.MicroschemaVersionPurgeJobProcessor;
 import com.gentics.mesh.core.jobs.NodeJobProcessor;
+import com.gentics.mesh.core.jobs.SchemaVersionPurgeJobProcessor;
 import com.gentics.mesh.core.jobs.SingleJobProcessor;
 import com.gentics.mesh.core.jobs.VersionPurgeJobProcessor;
 import com.gentics.mesh.core.rest.job.JobType;
+
 import dagger.Binds;
 import dagger.Module;
 import dagger.multibindings.IntoMap;
@@ -37,4 +43,29 @@ public abstract class JobProcessingModule {
 	@IntoMap
 	@JobTypeKey(JobType.versionpurge)
 	abstract SingleJobProcessor versionPurgeJobProcessor(VersionPurgeJobProcessor e);
+
+	@Binds
+	@IntoMap
+	@JobTypeKey(JobType.schemaversionpurge)
+	abstract SingleJobProcessor schemaVersionPurgeJobProcessor(SchemaVersionPurgeJobProcessor e);
+
+	@Binds
+	@IntoMap
+	@JobTypeKey(JobType.microschemaversionpurge)
+	abstract SingleJobProcessor microschemaVersionPurgeJobProcessor(MicroschemaVersionPurgeJobProcessor e);
+
+	@Binds
+	@IntoMap
+	@JobTypeKey(JobType.consistencycheck)
+	abstract SingleJobProcessor consistencyCheckJobProcessor(ConsistencyCheckJobProcessor e);
+
+	@Binds
+	@IntoMap
+	@JobTypeKey(JobType.consistencyrepair)
+	abstract SingleJobProcessor consistencyRepairJobProcessor(ConsistencyRepairJobProcessor e);
+
+	@Binds
+	@IntoMap
+	@JobTypeKey(JobType.imagecache)
+	abstract SingleJobProcessor imageCacheMigrationJobProcessor(ImageCacheMigrationProcessor e);
 }

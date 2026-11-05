@@ -5,17 +5,21 @@ import static com.gentics.mesh.core.rest.schema.change.impl.SchemaChangeOperatio
 import static io.netty.handler.codec.http.HttpResponseStatus.INTERNAL_SERVER_ERROR;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
-import org.apache.commons.lang3.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.gentics.mesh.core.rest.schema.BinaryExtractOptions;
 import com.gentics.mesh.core.rest.schema.BinaryFieldSchema;
 import com.gentics.mesh.core.rest.schema.FieldSchema;
 import com.gentics.mesh.core.rest.schema.FieldSchemaContainer;
+import com.gentics.mesh.core.rest.schema.JsonFieldSchema;
 import com.gentics.mesh.core.rest.schema.ListFieldSchema;
 import com.gentics.mesh.core.rest.schema.MicronodeFieldSchema;
 import com.gentics.mesh.core.rest.schema.MicroschemaModel;
@@ -24,11 +28,10 @@ import com.gentics.mesh.core.rest.schema.SchemaModel;
 import com.gentics.mesh.core.rest.schema.StringFieldSchema;
 import com.gentics.mesh.core.rest.schema.change.impl.SchemaChangeModel;
 import com.gentics.mesh.core.rest.schema.impl.BinaryFieldSchemaImpl;
+import com.gentics.mesh.json.JsonUtil;
 import com.gentics.mesh.util.CompareUtils;
 
 import io.vertx.core.json.JsonObject;
-import io.vertx.core.logging.Logger;
-import io.vertx.core.logging.LoggerFactory;
 
 /**
  * Abstract implementation for a field schema comparator.
@@ -104,6 +107,10 @@ public abstract class AbstractFieldSchemaContainerComparator<FC extends FieldSch
 				if (fieldInB instanceof StringFieldSchema) {
 					change.setProperty(SchemaChangeModel.ALLOW_KEY, ((StringFieldSchema) fieldInB).getAllowedValues());
 				}
+				if (fieldInB instanceof JsonFieldSchema jsonField) {
+					JsonNode[] schemas = jsonField.getAllowedSchemas();
+					change.setProperty(SchemaChangeModel.ALLOW_KEY, schemas == null ? null : Arrays.stream(schemas).map(JsonUtil::toJson).toArray(size -> new String[size]));
+				}
 				if (fieldInB instanceof BinaryFieldSchema) {
 					BinaryFieldSchema field = (BinaryFieldSchema) fieldInB;
 					BinaryExtractOptions options = field.getBinaryExtractOptions();
@@ -114,6 +121,7 @@ public abstract class AbstractFieldSchemaContainerComparator<FC extends FieldSch
 				}
 
 				change.setProperty(SchemaChangeModel.REQUIRED_KEY, fieldInB.isRequired());
+				change.setProperty(SchemaChangeModel.NO_INDEX_KEY, fieldInB.isNoIndex());
 
 				if (i - 1 >= 0) {
 					FieldSchema fieldBefore = containerB.getFields().get(i - 1);
@@ -148,7 +156,7 @@ public abstract class AbstractFieldSchemaContainerComparator<FC extends FieldSch
 		compareAndAddSchemaProperty(changes, SchemaChangeModel.NAME_KEY, containerA.getName(), containerB.getName(), classOfFC);
 
 		// Compare the description
-		compareAndAddSchemaProperty(changes, SchemaChangeModel.DESCRIPTION_KEY, containerA.getDescription(), containerB.getDescription(), classOfFC, true);
+		compareAndAddSchemaProperty(changes, SchemaChangeModel.DESCRIPTION_KEY, containerA.getDescription(), containerB.getDescription(), classOfFC, true, true);
 
 		return changes;
 	}
@@ -215,7 +223,7 @@ public abstract class AbstractFieldSchemaContainerComparator<FC extends FieldSch
 	 */
 	protected void compareAndAddSchemaProperty(List<SchemaChangeModel> changes, String key, Object objectA, Object objectB,
 		Class<? extends FC> classOfFC) {
-		compareAndAddSchemaProperty(changes, key, objectA, objectB, classOfFC, false);
+		compareAndAddSchemaProperty(changes, key, objectA, objectB, classOfFC, false, false);
 	}
 
 	/**
@@ -227,16 +235,11 @@ public abstract class AbstractFieldSchemaContainerComparator<FC extends FieldSch
 	 * @param objectB
 	 * @param classOfFC
 	 * @param nullIsEmpty true if null value is logically equal to an empty value
+	 * @param nullIsUnchanged true if null value for objectB shall be treated as "unchanged"
 	 */
 	protected void compareAndAddSchemaProperty(List<SchemaChangeModel> changes, String key, Object objectA, Object objectB,
-		Class<? extends FC> classOfFC, boolean nullIsEmpty) {
-		if (!CompareUtils.equals(objectA, objectB)) {
-			if (nullIsEmpty && (
-					(objectB == null && objectA != null && StringUtils.isEmpty(objectA.toString())) ||
-					(objectA == null && objectB != null && StringUtils.isEmpty(objectB.toString()))
-				)) {
-				return;
-			}
+		Class<? extends FC> classOfFC, boolean nullIsEmpty, boolean nullIsUnchanged) {
+		if (!CompareUtils.equals(objectA, objectB, nullIsEmpty, nullIsUnchanged)) {
 			SchemaChangeModel change = createFieldContainerUpdateChange(classOfFC);
 			change.getProperties().put(key, objectB);
 			changes.add(change);

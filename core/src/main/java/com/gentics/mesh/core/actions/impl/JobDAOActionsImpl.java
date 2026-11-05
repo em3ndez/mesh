@@ -5,7 +5,7 @@ import java.util.function.Predicate;
 import javax.inject.Inject;
 import javax.inject.Singleton;
 
-import com.gentics.mesh.context.BulkActionContext;
+import com.gentics.graphqlfilter.filter.operation.FilterOperation;
 import com.gentics.mesh.context.InternalActionContext;
 import com.gentics.mesh.core.action.DAOActionContext;
 import com.gentics.mesh.core.action.JobDAOActions;
@@ -69,8 +69,8 @@ public class JobDAOActionsImpl implements JobDAOActions {
 	}
 
 	@Override
-	public void delete(Tx tx, HibJob job, BulkActionContext bac) {
-		tx.jobDao().delete(job, bac);
+	public void delete(Tx tx, HibJob job) {
+		tx.jobDao().delete(job);
 	}
 
 	@Override
@@ -91,4 +91,8 @@ public class JobDAOActionsImpl implements JobDAOActions {
 		return jobDao.getETag(job, ac);
 	}
 
+	@Override
+	public Page<? extends HibJob> loadAll(DAOActionContext ctx, PagingParameters pagingInfo, FilterOperation<?> extraFilter) {
+		return ctx.tx().jobDao().findAll(ctx.ac(), pagingInfo, extraFilter);
+	}
 }

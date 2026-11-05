@@ -1,5 +1,8 @@
 package com.gentics.mesh.core.data.dao;
 
+import java.util.Collection;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import com.gentics.mesh.context.InternalActionContext;
@@ -141,6 +144,19 @@ public interface UserDao extends DaoGlobal<HibUser>, DaoTransformable<HibUser, U
 	HibUser inheritRolePermissions(HibUser user, HibBaseElement source, HibBaseElement target);
 
 	/**
+	 * Inherit the permissions of the source elment to the collection of target elements.
+	 * 
+	 * @param user
+	 *            User to check the permission from
+	 * @param source
+	 *            Element from which the element should be loaded
+	 * @param targets
+	 *            Elements for which the perms should be applied
+	 * @return
+	 */
+	HibUser inheritRolePermissions(HibUser user, HibBaseElement source, Collection<? extends HibBaseElement> targets);
+
+	/**
 	 * Set the plaintext password. Internally the password string will be hashed and the password hash will be set. This will also set
 	 * {@link HibUser#setForcedPasswordChange(boolean)} to false.
 	 *
@@ -218,7 +234,14 @@ public interface UserDao extends DaoGlobal<HibUser>, DaoTransformable<HibUser, U
 	 * @param user
 	 * @return
 	 */
-	Iterable<? extends HibRole> getRoles(HibUser user);
+	List<? extends HibRole> getRoles(HibUser user);
+
+	/**
+	 * Return the roles for all given users
+	 * @param users collection of users
+	 * @return map of user to the collections of roles
+	 */
+	Map<HibUser, Collection<? extends HibRole>> getRoles(Collection<HibUser> users);
 
 	/**
 	 * Load the groups of the user.
@@ -227,6 +250,13 @@ public interface UserDao extends DaoGlobal<HibUser>, DaoTransformable<HibUser, U
 	 * @return
 	 */
 	Result<? extends HibGroup> getGroups(HibUser user);
+
+	/**
+	 * Return the groups for all given users
+	 * @param users collection of users
+	 * @return map of user to the collections of groups
+	 */
+	Map<HibUser, Collection<? extends HibGroup>> getGroups(Collection<HibUser> users);
 
 	/**
 	 * Load the effective roles for user via the shortcut edges.
@@ -296,8 +326,9 @@ public interface UserDao extends DaoGlobal<HibUser>, DaoTransformable<HibUser, U
 	 * @param user
 	 * @param container
 	 * @param branchUuid
+	 * @param requestedVersion
 	 */
-	boolean hasReadPermission(HibUser user, HibNodeFieldContainer container, String branchUuid);
+	boolean hasReadPermission(HibUser user, HibNodeFieldContainer container, String branchUuid, String requestedVersion);
 
 	/**
 	 * Check the read permission on the given container and fail if the needed permission to read the container is not set. This method will not fail if the
@@ -312,9 +343,11 @@ public interface UserDao extends DaoGlobal<HibUser>, DaoTransformable<HibUser, U
 	/**
 	 * A CRC32 hash of the users {@link #getRoles roles}.
 	 *
+	 * @param user user
+	 * @param ac action context
 	 * @return A hash of the users roles
 	 */
-	String getRolesHash(HibUser user);
+	String getRolesHash(HibUser user,  InternalActionContext ac);
 
 	/**
 	 * Set the user password hash and update forced password change flag

@@ -1,6 +1,7 @@
 package com.gentics.mesh.core.migration;
 
 import java.util.ArrayList;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Queue;
@@ -8,6 +9,9 @@ import java.util.Set;
 
 import javax.annotation.ParametersAreNonnullByDefault;
 import javax.inject.Provider;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.gentics.mesh.context.NodeMigrationActionContext;
 import com.gentics.mesh.core.data.HibFieldContainer;
@@ -30,19 +34,17 @@ import com.gentics.mesh.core.endpoint.migration.MigrationHandler;
 import com.gentics.mesh.core.endpoint.migration.MigrationStatusHandler;
 import com.gentics.mesh.core.endpoint.migration.TriConsumer;
 import com.gentics.mesh.core.endpoint.node.BinaryUploadHandlerImpl;
-import com.gentics.mesh.core.rest.common.FieldContainer;
 import com.gentics.mesh.core.rest.event.EventCauseInfo;
 import com.gentics.mesh.core.rest.node.FieldMap;
 import com.gentics.mesh.core.rest.node.FieldMapImpl;
 import com.gentics.mesh.core.rest.node.field.Field;
+import com.gentics.mesh.core.rest.schema.FieldSchemaContainer;
+import com.gentics.mesh.core.rest.schema.FieldSchemaContainerVersion;
+import com.gentics.mesh.distributed.MasterInfoProvider;
 import com.gentics.mesh.etc.config.MeshOptions;
 import com.gentics.mesh.event.EventQueueBatch;
 import com.gentics.mesh.metric.MetricsService;
 import com.gentics.mesh.util.CollectionUtil;
-import com.gentics.mesh.util.StreamUtil;
-
-import io.vertx.core.logging.Logger;
-import io.vertx.core.logging.LoggerFactory;
 
 /**
  * Abstract implementation for migration handlers that deal with content migrations.
@@ -59,15 +61,21 @@ public abstract class AbstractMigrationHandler extends AbstractHandler implement
 
 	protected final Provider<EventQueueBatch> batchProvider;
 
-	private final MeshOptions options;
+	protected final MeshOptions options;
+
+	private final MasterInfoProvider masterInfoProvider;
+
+	private final boolean clusteringEnabled;
 
 	public AbstractMigrationHandler(Database db, BinaryUploadHandlerImpl binaryFieldHandler, MetricsService metrics,
-									Provider<EventQueueBatch> batchProvider, MeshOptions options) {
+									Provider<EventQueueBatch> batchProvider, MeshOptions options, MasterInfoProvider masterInfoProvider) {
 		this.db = db;
 		this.binaryFieldHandler = binaryFieldHandler;
 		this.metrics = metrics;
 		this.batchProvider = batchProvider;
 		this.options = options;
+		this.masterInfoProvider = masterInfoProvider;
+		clusteringEnabled = this.options.getClusterOptions().isEnabled();
 	}
 
 	/**
@@ -103,17 +111,38 @@ public abstract class AbstractMigrationHandler extends AbstractHandler implement
 	 *            rest model of the container
 	 * @throws Exception
 	 */
-	protected void migrate(NodeMigrationActionContext ac, HibFieldContainer newContainer, FieldContainer newContent,
+	protected void migrate(NodeMigrationActionContext ac, HibFieldContainer newContainer, FieldMap oldFields,
 						   HibFieldSchemaVersionElement<?, ?, ?, ?, ?> fromVersion) throws Exception {
-		FieldMap fields = new FieldMapImpl();
-		Map<String, Field> newFields = fromVersion.getChanges()
-			.filter(change -> !(change instanceof HibRemoveFieldChange)) // nothing to do for removed fields, they were never added
-			.map(change -> change.createFields(fromVersion.getSchema(), newContent))
-			.collect(StreamUtil.mergeMaps());
+		LinkedList<HibFieldSchemaVersionElement<?, ?, ?, ?, ?>> versionChain = new LinkedList<>();
+		do {
+			versionChain.add(fromVersion);
+			fromVersion = fromVersion.getNextVersion();
+		} while (fromVersion != null && !newContainer.getSchemaContainerVersion().getVersion().equals(fromVersion.getVersion()));
 
-		fields.putAll(newFields);
+		for (HibFieldSchemaVersionElement<?, ?, ?, ?, ?> version : versionChain) {
+			for (HibSchemaChange<FieldSchemaContainer> change : version.getChanges().toList()) {
+				if (change instanceof HibRemoveFieldChange) {
+					continue;
+				}
+				Map<String, Field> currentChanges = change.createFields(version.getSchema(), oldFields);
+				FieldMap fm = new FieldMapImpl();
+				fm.putAll(currentChanges);
 
-		newContainer.updateFieldsFromRest(ac, fields);
+				oldFields.putAll(currentChanges);
+
+				FieldSchemaContainerVersion schema = version.getNextVersion().getSchema();
+				if (schema instanceof FieldSchemaContainerVersion && !((FieldSchemaContainerVersion)schema).getVersion().equals(newContainer.getSchemaContainerVersion().getVersion())) {
+					log.info("Update skipped for container [{}] of schema [{}] version [{}] from the intermediate version [{}]", newContainer.getUuid(), newContainer.getSchemaContainerVersion().getSchema().getName(), newContainer.getSchemaContainerVersion().getVersion(), ((FieldSchemaContainerVersion)schema).getVersion());
+					schema.assertForUnhandledFields(fm);
+				} else {
+					if (versionChain.size() > 1) {
+						fm = oldFields;
+						schema.removeUnhandledFields(fm);
+					}
+					newContainer.updateFieldsFromRest(ac, fm);
+				}
+			}
+		}
 	}
 
 	/**
@@ -136,6 +165,16 @@ public abstract class AbstractMigrationHandler extends AbstractHandler implement
 		sqb.setCause(cause);
 		int pollCount = options.getMigrationMaxBatchSize();
 		while (!containers.isEmpty()) {
+			// check whether the database is ready for the migration
+			if (db.isReadOnly(false)) {
+				errorsDetected.add(new MigrationAbortedException("Database is read-only."));
+				return errorsDetected;
+			}
+			if (clusteringEnabled && !masterInfoProvider.isMaster()) {
+				errorsDetected.add(new MigrationAbortedException("Instance is not the master."));
+				return errorsDetected;
+			}
+
 			List<T> containerList = CollectionUtil.pollMany(containers, pollCount);
 			try {
 				// Each container migration has its own search queue batch which is then combined with other batch entries.

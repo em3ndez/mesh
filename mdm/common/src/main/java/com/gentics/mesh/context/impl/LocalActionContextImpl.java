@@ -2,12 +2,8 @@ package com.gentics.mesh.context.impl;
 
 import static com.gentics.mesh.rest.client.AbstractMeshRestHttpClient.getQuery;
 
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Locale;
-import java.util.Map;
+import java.util.*;
 import java.util.Map.Entry;
-import java.util.Set;
 
 import com.gentics.mesh.MeshVersion;
 import com.gentics.mesh.cli.BootstrapInitializer;
@@ -18,6 +14,7 @@ import com.gentics.mesh.core.data.user.HibUser;
 import com.gentics.mesh.core.data.user.MeshAuthUser;
 import com.gentics.mesh.core.rest.common.RestModel;
 import com.gentics.mesh.dagger.BaseMeshComponent;
+import com.gentics.mesh.etc.config.HttpServerConfig;
 import com.gentics.mesh.json.JsonUtil;
 import com.gentics.mesh.parameter.ParameterProvider;
 import com.gentics.mesh.router.route.SecurityLoggingHandler;
@@ -28,8 +25,8 @@ import io.netty.handler.codec.http.HttpResponseStatus;
 import io.vertx.core.Future;
 import io.vertx.core.MultiMap;
 import io.vertx.core.Promise;
+import io.vertx.core.http.Cookie;
 import io.vertx.core.spi.logging.LogDelegate;
-import io.vertx.ext.web.Cookie;
 import io.vertx.ext.web.FileUpload;
 
 /**
@@ -50,7 +47,7 @@ public class LocalActionContextImpl<T> extends AbstractInternalActionContext imp
 	private HttpResponseStatus responseStatus;
 	private Promise<T> promise = Promise.promise();
 	private Class<? extends T> classOfResponse;
-	private Set<FileUpload> fileUploads = new HashSet<>();
+	private List<FileUpload> fileUploads = new ArrayList<>();
 	private LogDelegate securityLogger = new DummyLogger();
 	private BootstrapInitializer boot;
 
@@ -67,7 +64,7 @@ public class LocalActionContextImpl<T> extends AbstractInternalActionContext imp
 	public LocalActionContextImpl(BootstrapInitializer boot, MeshAuthUser user, Class<? extends T> classOfResponse,
 		ParameterProvider... requestParameters) {
 		this.boot = boot;
-		this.query = getQuery(requestParameters);
+		this.query = getQuery(null, requestParameters);
 		this.user = user;
 		this.classOfResponse = classOfResponse;
 		data.put(SecurityLoggingHandler.SECURITY_LOGGER_CONTEXT_KEY, securityLogger);
@@ -78,6 +75,11 @@ public class LocalActionContextImpl<T> extends AbstractInternalActionContext imp
 				parameters.add(entry.getKey(), entry.getValue());
 			}
 		}
+	}
+
+	@Override
+	protected HttpServerConfig getHttpServerConfig() {
+		return boot.mesh().getOptions().getHttpServerOptions();
 	}
 
 	@Override
@@ -102,7 +104,7 @@ public class LocalActionContextImpl<T> extends AbstractInternalActionContext imp
 
 	@Override
 	public String getBodyAsString() {
-		return payloadObject.toJson();
+		return payloadObject != null ? payloadObject.toJson(boot.mesh().getOptions().getHttpServerOptions().isMinifyJson()) : null;
 	}
 
 	@Override
@@ -205,7 +207,7 @@ public class LocalActionContextImpl<T> extends AbstractInternalActionContext imp
 	}
 
 	@Override
-	public Set<FileUpload> getFileUploads() {
+	public List<FileUpload> getFileUploads() {
 		return fileUploads;
 	}
 
@@ -262,5 +264,10 @@ public class LocalActionContextImpl<T> extends AbstractInternalActionContext imp
 	@Override
 	public int getApiVersion() {
 		return MeshVersion.CURRENT_API_VERSION;
+	}
+
+	@Override
+	public void setHttpServerConfig(HttpServerConfig config) {
+		// No-op
 	}
 }

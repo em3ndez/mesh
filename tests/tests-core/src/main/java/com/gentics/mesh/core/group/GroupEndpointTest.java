@@ -23,6 +23,7 @@ import static io.netty.handler.codec.http.HttpResponseStatus.CONFLICT;
 import static io.netty.handler.codec.http.HttpResponseStatus.FORBIDDEN;
 import static io.netty.handler.codec.http.HttpResponseStatus.INTERNAL_SERVER_ERROR;
 import static io.netty.handler.codec.http.HttpResponseStatus.NOT_FOUND;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
@@ -43,6 +44,7 @@ import com.gentics.mesh.core.data.dao.UserDao;
 import com.gentics.mesh.core.data.group.HibGroup;
 import com.gentics.mesh.core.data.user.HibUser;
 import com.gentics.mesh.core.db.Tx;
+import com.gentics.mesh.core.rest.SortOrder;
 import com.gentics.mesh.core.rest.error.GenericRestException;
 import com.gentics.mesh.core.rest.event.impl.MeshElementEventModelImpl;
 import com.gentics.mesh.core.rest.group.GroupCreateRequest;
@@ -51,6 +53,8 @@ import com.gentics.mesh.core.rest.group.GroupResponse;
 import com.gentics.mesh.core.rest.group.GroupUpdateRequest;
 import com.gentics.mesh.parameter.impl.PagingParametersImpl;
 import com.gentics.mesh.parameter.impl.RolePermissionParametersImpl;
+import com.gentics.mesh.parameter.impl.SortingParametersImpl;
+import com.gentics.mesh.rest.client.MeshRestClientMessageException;
 import com.gentics.mesh.test.MeshTestSetting;
 import com.gentics.mesh.test.context.AbstractMeshTest;
 import com.gentics.mesh.test.definition.BasicRestTestcases;
@@ -110,9 +114,9 @@ public class GroupEndpointTest extends AbstractMeshTest implements BasicRestTest
 		final String name = "New Name";
 		String uuid = UUIDUtil.randomUUID();
 
-		GroupUpdateRequest request = new GroupUpdateRequest();
+		GroupCreateRequest request = new GroupCreateRequest();
 		request.setName(name);
-		GroupResponse restGroup = call(() -> client().updateGroup(uuid, request));
+		GroupResponse restGroup = call(() -> client().createGroup(uuid, request));
 
 		waitForSearchIdleEvent();
 
@@ -234,6 +238,34 @@ public class GroupEndpointTest extends AbstractMeshTest implements BasicRestTest
 
 	@Test
 	@Override
+	public void testReadPermittedSorted() throws Exception {
+		for (int i = 0; i < 10; i++) {
+			final String name = "test12345_" + i;
+			GroupCreateRequest request = new GroupCreateRequest();
+			request.setName(name);
+			GroupResponse response = call(() -> client().createGroup(request));
+			if ((i % 2) == 0) {
+				tx(tx -> {
+					tx.roleDao().revokePermissions(role(), tx.groupDao().findByUuid(response.getUuid()), READ_PERM);
+				});
+			}
+		}
+		GroupListResponse list = call(() -> client().findGroups(new SortingParametersImpl("name", SortOrder.DESCENDING)));
+		assertEquals("Total data size should be 8", 8, list.getData().size());
+		assertThat(list.getData()).isSortedAccordingTo((fa, fb) -> getTestContext().getSortComparator().reversed().compare(
+				fa != null ? fa.getName() : null,
+				fb != null ? fb.getName() : null));
+	}
+
+	@Test
+	@Override
+	public void testReadPermittedSortedWrongField() throws Exception {
+		MeshRestClientMessageException error = call(() -> client().findGroups(new SortingParametersImpl("existiertleidernicht", SortOrder.DESCENDING)), BAD_REQUEST);
+		assertThat(error.getResponseMessage().getMessage()).as("Error message").startsWith("The following column names are not allowed for sorting: [existiertleidernicht].");
+	}
+
+	@Test
+	@Override
 	public void testReadMultiple() throws Exception {
 		final int initialGroupCount = groups().size();
 		final String extraGroupName = "no_perm_group";
@@ -297,6 +329,8 @@ public class GroupEndpointTest extends AbstractMeshTest implements BasicRestTest
 		assertEquals(nGroups + initialGroupCount, response.getMetainfo().getPageCount());
 		assertEquals(nGroups + initialGroupCount, response.getMetainfo().getTotalCount());
 		assertEquals(1, response.getMetainfo().getPerPage().longValue());
+
+		verifySorting(param -> call(() -> client().findGroups(param)), GroupResponse::getName, "name", "List of group names");
 	}
 
 	@Test
@@ -337,7 +371,7 @@ public class GroupEndpointTest extends AbstractMeshTest implements BasicRestTest
 
 	@Test
 	public void testReadGroupWithBogusUUID() throws Exception {
-		final String bogusUuid = "sadgasdasdg";
+		final String bogusUuid = UUIDUtil.randomUUID();
 		call(() -> client().findGroupByUuid(bogusUuid), NOT_FOUND, "object_not_found_for_uuid", bogusUuid);
 	}
 
@@ -470,15 +504,6 @@ public class GroupEndpointTest extends AbstractMeshTest implements BasicRestTest
 				assertNotNull(msg, grp.getRolePerms());
 			}
 		}
-	}
-
-	@Test
-	@Override
-	public void testUpdateWithBogusUuid() throws GenericRestException, Exception {
-		final String name = "New Name";
-		GroupUpdateRequest request = new GroupUpdateRequest();
-		request.setName(name);
-		call(() -> client().updateGroup("bogus", request), BAD_REQUEST, "error_illegal_uuid", "bogus");
 	}
 
 	@Test

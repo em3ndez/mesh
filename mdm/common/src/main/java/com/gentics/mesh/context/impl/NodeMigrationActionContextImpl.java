@@ -1,11 +1,6 @@
 package com.gentics.mesh.context.impl;
 
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Set;
+import java.util.*;
 
 import com.gentics.mesh.context.AbstractInternalActionContext;
 import com.gentics.mesh.context.NodeMigrationActionContext;
@@ -15,13 +10,15 @@ import com.gentics.mesh.core.data.project.HibProject;
 import com.gentics.mesh.core.data.schema.HibSchemaVersion;
 import com.gentics.mesh.core.data.user.HibUser;
 import com.gentics.mesh.core.data.user.MeshAuthUser;
+import com.gentics.mesh.core.db.Tx;
 import com.gentics.mesh.core.endpoint.migration.MigrationStatusHandler;
 import com.gentics.mesh.core.rest.event.node.SchemaMigrationCause;
 import com.gentics.mesh.core.rest.job.warning.ConflictWarning;
+import com.gentics.mesh.etc.config.HttpServerConfig;
 
 import io.netty.handler.codec.http.HttpResponseStatus;
 import io.vertx.core.MultiMap;
-import io.vertx.ext.web.Cookie;
+import io.vertx.core.http.Cookie;
 import io.vertx.ext.web.FileUpload;
 
 /**
@@ -51,9 +48,29 @@ public class NodeMigrationActionContextImpl extends AbstractInternalActionContex
 
 	private MigrationStatusHandler status;
 
+	private HttpServerConfig httpServerConfig;
+
+	public NodeMigrationActionContextImpl() {
+		this.httpServerConfig = Tx.maybeGet().map(tx -> tx.data().options().getHttpServerOptions()).orElse(null);
+	}
+
 	@Override
 	public HibBranch getBranch() {
 		return branch;
+	}
+
+	@Override
+	protected HttpServerConfig getHttpServerConfig() {
+		return httpServerConfig;
+	}
+
+	/**
+	 * Set the {@link HttpServerConfig}.
+	 * 
+	 * @param config
+	 */
+	public void setHttpServerConfig(HttpServerConfig config) {
+		this.httpServerConfig = config;
 	}
 
 	/**
@@ -126,7 +143,7 @@ public class NodeMigrationActionContextImpl extends AbstractInternalActionContex
 	}
 
 	@Override
-	public Set<FileUpload> getFileUploads() {
+	public List<FileUpload> getFileUploads() {
 
 		return null;
 	}

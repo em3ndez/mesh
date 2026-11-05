@@ -4,8 +4,8 @@ import java.util.HashMap;
 import java.util.Map;
 
 import io.vertx.core.Vertx;
-import io.vertx.core.logging.Logger;
-import io.vertx.core.logging.LoggerFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import io.vertx.ext.web.Router;
 
 /**
@@ -15,7 +15,7 @@ public class CustomRouterImpl implements CustomRouter {
 
 	private static final Logger log = LoggerFactory.getLogger(CustomRouterImpl.class);
 
-	public static final String CUSTOM_MOUNTPOINT = "/custom";
+	public static final String CUSTOM_MOUNTPOINT = "/custom*";
 
 	private final Router router;
 
@@ -30,7 +30,7 @@ public class CustomRouterImpl implements CustomRouter {
 		this.vertx = vertx;
 		Router rootRouter = root.getRouter();
 		router = Router.router(vertx);
-		rootRouter.mountSubRouter(CUSTOM_MOUNTPOINT, router);
+		rootRouter.route(CUSTOM_MOUNTPOINT).subRouter(router);
 	}
 
 	/**
@@ -38,6 +38,7 @@ public class CustomRouterImpl implements CustomRouter {
 	 * 
 	 * @return
 	 */
+	@Override
 	public Router getRouter() {
 		return this.router;
 	}
@@ -56,7 +57,7 @@ public class CustomRouterImpl implements CustomRouter {
 			log.info("Added custom subrouter {" + name + "}");
 			customRouters.put(name, router);
 		}
-		router.mountSubRouter("/" + name, router);
+		router.route("/" + name + "*").subRouter(router);
 		return router;
 	}
 

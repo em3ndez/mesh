@@ -21,6 +21,7 @@ public class MeshUploadOptions implements Option {
 	public static final String DEFAULT_TEMP_DIR = "data" + File.separator + "tmp" + File.separator + "file-uploads";;
 	public static final int DEFAULT_DOCUMENT_PARSER_LIMIT = 40_000;
 	public static final boolean DEFAULT_UPLOAD_PARSER_FLAG = true;
+	public static final long DEFAULT_CHECK_INTERVAL = 60_000;
 
 	public static final String MESH_BINARY_DIR_ENV = "MESH_BINARY_DIR";
 	public static final String MESH_BINARY_UPLOAD_TEMP_DIR_ENV = "MESH_BINARY_UPLOAD_TEMP_DIR";
@@ -28,10 +29,12 @@ public class MeshUploadOptions implements Option {
 	public static final String MESH_BINARY_DOCUMENT_PARSER_LIMIT_ENV = "MESH_BINARY_DOCUMENT_PARSER_LIMIT";
 	public static final String MESH_BINARY_DOCUMENT_PARSER_ENV = "MESH_BINARY_DOCUMENT_PARSER";
 	public static final String MESH_BINARY_METADATA_WHITELIST_ENV = "MESH_BINARY_METADATA_WHITELIST";
+	public static final String MESH_BINARY_CHECK_INTERVAL = "MESH_BINARY_CHECK_INTERVAL";
 
-	@JsonProperty(required = false)
-	@JsonPropertyDescription("The upload size limit in bytes. Default: " + DEFAULT_FILEUPLOAD_MB_LIMIT)
+	@JsonProperty(required = false, defaultValue = DEFAULT_FILEUPLOAD_BYTE_LIMIT + " (" + DEFAULT_FILEUPLOAD_MB_LIMIT + " MB)")
+	@JsonPropertyDescription("The upload size limit in bytes.")
 	@EnvironmentVariable(name = MESH_BINARY_UPLOAD_LIMIT_ENV, description = "Override the configured binary byte upload limit.")
+
 	private long byteLimit = DEFAULT_FILEUPLOAD_BYTE_LIMIT;
 
 	@JsonProperty(required = false)
@@ -45,13 +48,12 @@ public class MeshUploadOptions implements Option {
 	private String tempDirectory = DEFAULT_TEMP_DIR;
 
 	@JsonProperty(required = false)
-	@JsonPropertyDescription("The parser limit for uploaded documents (pdf, doc, docx). Default: " + DEFAULT_DOCUMENT_PARSER_LIMIT)
+	@JsonPropertyDescription("The parser limit for uploaded documents (pdf, doc, docx).")
 	@EnvironmentVariable(name = MESH_BINARY_DOCUMENT_PARSER_LIMIT_ENV, description = "Override the configured parser limit.")
 	private int parserLimit = DEFAULT_DOCUMENT_PARSER_LIMIT;
 
 	@JsonProperty(required = false)
-	@JsonPropertyDescription("If true, the document parser will process uploads and extract metadata and contents. Default: "
-		+ DEFAULT_UPLOAD_PARSER_FLAG)
+	@JsonPropertyDescription("If true, the document parser will process uploads and extract metadata and contents.")
 	@EnvironmentVariable(name = MESH_BINARY_DOCUMENT_PARSER_ENV, description = "Override the document parser enabled flag.")
 	private boolean parser = DEFAULT_UPLOAD_PARSER_FLAG;
 
@@ -60,9 +62,14 @@ public class MeshUploadOptions implements Option {
 	@EnvironmentVariable(name = MESH_BINARY_METADATA_WHITELIST_ENV, description = "Override the metadata whitelist")
 	private Set<String> metadataWhitelist;
 
+	@JsonProperty
+	@JsonPropertyDescription("Interval in milliseconds for performing binary check requests for binary fields where a check service URL is defined. For values less than one the check is disabled.")
+	@EnvironmentVariable(name = MESH_BINARY_CHECK_INTERVAL, description = "Override the binary check interval")
+	private long checkInterval = DEFAULT_CHECK_INTERVAL;
+
 	/**
 	 * Return the upload limit in bytes.
-	 * 
+	 *
 	 * @return Limit in bytes
 	 */
 	public long getByteLimit() {
@@ -71,7 +78,7 @@ public class MeshUploadOptions implements Option {
 
 	/**
 	 * Set the upload limit in bytes.
-	 * 
+	 *
 	 * @param byteLimit
 	 *            Limit in bytes
 	 * @return Fluent API
@@ -83,7 +90,7 @@ public class MeshUploadOptions implements Option {
 
 	/**
 	 * Return the binary storage directory.
-	 * 
+	 *
 	 * @return Binary storage filesystem directory
 	 */
 	public String getDirectory() {
@@ -92,7 +99,7 @@ public class MeshUploadOptions implements Option {
 
 	/**
 	 * Set the binary storage directory.
-	 * 
+	 *
 	 * @param directory
 	 *            Binary storage filesystem directory
 	 * @return Fluent API
@@ -104,7 +111,7 @@ public class MeshUploadOptions implements Option {
 
 	/**
 	 * Returns the upload temporary directory. New uploads are placed in this directory before those are processed and moved.
-	 * 
+	 *
 	 * @return Temporary filesystem directory
 	 */
 	public String getTempDirectory() {
@@ -113,7 +120,7 @@ public class MeshUploadOptions implements Option {
 
 	/**
 	 * Set the temporary upload directory. New uploads will be placed within this location before processing.
-	 * 
+	 *
 	 * @param tempDirectory
 	 *            Temporary filesystem directory
 	 * @return Fluent API
@@ -125,7 +132,7 @@ public class MeshUploadOptions implements Option {
 
 	/**
 	 * Return the configured parser limit.
-	 * 
+	 *
 	 * @return
 	 */
 	public int getParserLimit() {
@@ -134,7 +141,7 @@ public class MeshUploadOptions implements Option {
 
 	/**
 	 * Set the parser limit for uploaded documents.
-	 * 
+	 *
 	 * @param parserLimit
 	 * @return Fluent API
 	 */
@@ -145,7 +152,7 @@ public class MeshUploadOptions implements Option {
 
 	/**
 	 * Check whether the upload document parser is enabled.
-	 * 
+	 *
 	 * @return
 	 */
 	public boolean isParser() {
@@ -154,7 +161,7 @@ public class MeshUploadOptions implements Option {
 
 	/**
 	 * Set the document parser flag.
-	 * 
+	 *
 	 * @param parser
 	 * @return Fluent API
 	 */
@@ -180,6 +187,25 @@ public class MeshUploadOptions implements Option {
 	 */
 	public MeshUploadOptions setMetadataWhitelist(Set<String> metadataWhitelist) {
 		this.metadataWhitelist = metadataWhitelist;
+		return this;
+	}
+
+	/**
+	 * Get the binary check interval.
+	 *
+	 * @return The binary check interval.
+	 */
+	public long getCheckInterval() {
+		return checkInterval;
+	}
+
+	/**
+	 * Set the binary check interval.
+	 * @param checkInterval The binary check interval.
+	 * @return Fluent API
+	 */
+	public MeshUploadOptions setCheckInterval(long checkInterval) {
+		this.checkInterval = checkInterval;
 		return this;
 	}
 }

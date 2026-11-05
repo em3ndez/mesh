@@ -1,5 +1,6 @@
 package com.gentics.mesh.core.data.search;
 
+import java.util.Collection;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -7,14 +8,19 @@ import java.util.function.Function;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
+import org.apache.commons.lang3.tuple.Pair;
+
 import com.gentics.mesh.context.InternalActionContext;
+import com.gentics.mesh.core.data.Bucket;
 import com.gentics.mesh.core.data.HibBaseElement;
 import com.gentics.mesh.core.data.HibBucketableElement;
 import com.gentics.mesh.core.data.perm.InternalPermission;
 import com.gentics.mesh.core.data.search.index.IndexInfo;
 import com.gentics.mesh.core.data.search.request.SearchRequest;
 import com.gentics.mesh.core.rest.search.EntityMetrics;
+import com.gentics.mesh.handler.DataHolderContext;
 import com.gentics.mesh.search.index.MappingProvider;
+import com.gentics.mesh.search.index.Transformer;
 
 import io.reactivex.Completable;
 import io.reactivex.Flowable;
@@ -49,14 +55,23 @@ public interface IndexHandler<T extends HibBaseElement> {
 	 */
 	Function<String, T> elementLoader();
 
+
 	/**
-	 * Load all elements from the graph that are needed for the index handler.
-	 * 
-	 * @param tx
+	 * Returns loader function which can be used to find and load multiple elements by uuids. The order of input/output is not guaranteed to be preserved? as well as the processing of duplicates.
 	 * 
 	 * @return
 	 */
-	Stream<? extends T> loadAllElements();
+	Function<Collection<String>, Stream<Pair<String, T>>> elementsLoader();
+
+	/**
+	 * Load all elements in the bucket that are needed for the index handler.
+	 * 
+	 * @param bucket bucket
+	 * @param dc data holder context for prepared data
+	 * 
+	 * @return
+	 */
+	Collection<? extends T> loadAllElements(Bucket bucket, DataHolderContext dc);
 
 	/**
 	 * Return the class of elements which can be handled by this handler.
@@ -82,11 +97,11 @@ public interface IndexHandler<T extends HibBaseElement> {
 	Set<String> filterUnknownIndices(Set<String> indices);
 
 	/**
-	 * Load a map which contains the applicable indices. The key of the map is the index name.
+	 * Load a map which contains the applicable indices. The key of the map is the index name. If the value is empty, the indexing is disabled and has to be removed, if exists.
 	 * 
 	 * @return Map with index information
 	 */
-	Map<String, IndexInfo> getIndices();
+	Map<String, Optional<IndexInfo>> getIndices();
 
 	/**
 	 * Get the names of all indices for searching purposes. The action context will be examined to determine the project scope and the branch scope. If possible
@@ -124,9 +139,10 @@ public interface IndexHandler<T extends HibBaseElement> {
 	 * Generate the version for the given element.
 	 * 
 	 * @param element
+	 * @param dhc data holder context
 	 * @return
 	 */
-	String generateVersion(T element);
+	String generateVersion(T element, DataHolderContext dhc);
 
 	/**
 	 * Returns a map of metrics which the handler is aware of.
@@ -143,6 +159,13 @@ public interface IndexHandler<T extends HibBaseElement> {
 	long getTotalCountFromGraph();
 
 	/**
+	 * Return the index specific transformer which is used to generate the search documents.
+	 * 
+	 * @return
+	 */
+	Transformer getTransformer();
+
+	/**
 	 * Return the index specific mapping provider.
 	 * 
 	 * @return
@@ -154,4 +177,13 @@ public interface IndexHandler<T extends HibBaseElement> {
 	 * @return completable
 	 */
 	Completable check();
+
+	/**
+	 * Does definition of the index of this type depend on the data?
+	 * 
+	 * @return
+	 */
+	default boolean isDefinitionDataDependent() {
+		return false;
+	}
 }

@@ -20,8 +20,8 @@ import com.gentics.mesh.context.impl.InternalRoutingActionContextImpl;
 import com.gentics.mesh.core.db.Database;
 
 import io.reactivex.Flowable;
-import io.vertx.core.logging.Logger;
-import io.vertx.core.logging.LoggerFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import io.vertx.ext.web.RoutingContext;
 
 /**
@@ -34,7 +34,7 @@ public class DebugInfoHandler {
 	private final Database db;
 	private static final Logger log = LoggerFactory.getLogger(DebugInfoHandler.class);
 	private final Set<String> defaultExcluded = Stream.of(
-		"consistencyCheck").collect(Collectors.toSet());
+		"consistencyCheck","backup").collect(Collectors.toSet());
 
 	@Inject
 	public DebugInfoHandler(Set<DebugInfoProvider> debugInfoProviders, Database db) {

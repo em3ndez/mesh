@@ -16,7 +16,7 @@ import java.util.function.Supplier;
 import com.gentics.mesh.context.InternalActionContext;
 import com.gentics.mesh.core.TypeInfo;
 import com.gentics.mesh.core.data.HibCoreElement;
-import com.gentics.mesh.core.data.HibNamedElement;
+import com.gentics.mesh.core.data.HibNamedBaseElement;
 import com.gentics.mesh.core.data.HibNodeFieldContainer;
 import com.gentics.mesh.core.data.HibProjectElement;
 import com.gentics.mesh.core.data.HibReferenceableElement;
@@ -57,7 +57,7 @@ import com.gentics.mesh.parameter.PagingParameters;
  * Domain model for branch.
  */
 public interface HibBranch extends HibCoreElement<BranchResponse>, HibReferenceableElement<BranchReference>, 
-		HibUserTracking, HibProjectElement, HibNamedElement, Taggable {
+		HibUserTracking, HibProjectElement, HibNamedBaseElement, Taggable {
 
 	TypeInfo TYPE_INFO = new TypeInfo(BRANCH, BRANCH_CREATED, BRANCH_UPDATED, BRANCH_DELETED);
 
@@ -283,22 +283,6 @@ public interface HibBranch extends HibCoreElement<BranchResponse>, HibReferencea
 	 * @return Fluent API
 	 */
 	HibBranch setProject(HibProject project);
-
-	/**
-	 * Find the latest schema version which is assigned to the branch which matches the provided schema container
-	 * 
-	 * @param schemaContainer
-	 * @return Found version or null if no version could be found.
-	 */
-	HibSchemaVersion findLatestSchemaVersion(HibSchema schemaContainer);
-
-	/**
-	 * Find the latest microschema version which is assigned to the branch which matches the provided microschema container
-	 * 
-	 * @param schemaContainer
-	 * @return Found version or null if no version could be found.
-	 */
-	HibMicroschemaVersion findLatestMicroschemaVersion(HibMicroschema schemaContainer);
 
 	/**
 	 * Add the given tag to the list of tags for this branch.
